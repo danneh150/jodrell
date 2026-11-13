@@ -1,0 +1,74 @@
+{
+  "name": "jodrell",
+  "version": "0.6.0",
+  "description": "The AI-first API client: an alternative to Postman and Bruno, built for working through your AI coding agent. Every request it makes, in its replies, a GUI or a timeline.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "mcp-apps",
+    "claude",
+    "claude-code",
+    "ai-agent",
+    "api-client",
+    "postman",
+    "postman-alternative",
+    "openapi",
+    "swagger",
+    "http",
+    "rest",
+    "api-testing",
+    "ai-first",
+    "bruno-alternative",
+    "insomnia-alternative"
+  ],
+  "homepage": "https://github.com/danneh150/jodrell#readme",
+  "bugs": {
+    "url": "https://github.com/danneh150/jodrell/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/danneh150/jodrell.git"
+  },
+  "license": "MIT",
+  "author": "Dan Curtis (https://dancurtis.dev)",
+  "type": "module",
+  "bin": {
+    "jodrell": "bin/jodrell.mjs"
+  },
+  "main": "src/server.mjs",
+  "files": [
+    "bin",
+    "src",
+    "ui",
+    "pixel",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "test": "node --test \"test/unit/*.test.mjs\" \"test/integration/*.test.mjs\"",
+    "test:unit": "node --test \"test/unit/*.test.mjs\"",
+    "test:integration": "node --test \"test/integration/*.test.mjs\"",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=\"src/**\" --test-coverage-include=\"bin/**\" \"test/unit/*.test.mjs\" \"test/integration/*.test.mjs\"",
+    "fake-api": "node test/fixtures-serve.mjs",
+    "demo": "node examples/demo-api.mjs",
+    "dev": "node bin/jodrell.mjs gui",
+    "try-agent": "node examples/agent-collections.mjs",
+    "try-agent-spec": "node examples/agent-flow.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.7.5",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
+  },
+  "optionalDependencies": {
+    "@zenbu-labs/pixel": "^0.2.12",
+    "react": "^18.3.1"
+  }
+}

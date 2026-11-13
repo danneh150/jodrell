@@ -1,0 +1,92 @@
+openapi: 3.0.3
+info:
+  title: Demo shop
+  version: "1.0"
+servers:
+  - url: http://localhost:4600
+paths:
+  /login:
+    post:
+      operationId: login
+      summary: Log in and get a token (also sets a session cookie)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, example: dev@example.com }
+                password: { type: string, example: secret }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [access_token]
+                properties:
+                  access_token: { type: string }
+                  expires_in: { type: integer }
+        "401": { description: Wrong credentials }
+  /orders:
+    get:
+      operationId: listOrders
+      summary: List orders
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [open, shipped] } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Order" } }
+        "401": { description: Not logged in }
+    post:
+      operationId: createOrder
+      summary: Create an order
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sku: { type: string, example: TEL-DWARF3 }
+                quantity: { type: integer, example: 1 }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Order" }
+  /orders/{orderId}:
+    get:
+      operationId: getOrder
+      summary: Get one order
+      parameters:
+        - { name: orderId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Order" }
+        "404": { description: Not found }
+components:
+  schemas:
+    Order:
+      type: object
+      required: [id, sku, quantity, status, total]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        sku: { type: string }
+        quantity: { type: integer, minimum: 1 }
+        status: { type: string, enum: [open, shipped] }
+        total: { type: number }
+        note: { type: string, nullable: true }

@@ -1,0 +1,54 @@
+{
+  "info": { "name": "Demo shop (Postman)", "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json" },
+  "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }] },
+  "variable": [{ "key": "baseUrl", "value": "http://localhost:4600" }],
+  "item": [
+    {
+      "name": "Log in",
+      "request": {
+        "auth": { "type": "noauth" },
+        "method": "POST",
+        "header": [],
+        "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}", "options": { "raw": { "language": "json" } } },
+        "url": { "raw": "{{baseUrl}}/login", "host": ["{{baseUrl}}"], "path": ["login"] }
+      },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test(\"Status code is 200\", function () {",
+        "    pm.response.to.have.status(200);",
+        "});",
+        "var jsonData = pm.response.json();",
+        "pm.environment.set(\"token\", jsonData.access_token);",
+        "console.log('logged in');"
+      ] } }]
+    },
+    {
+      "name": "Orders",
+      "item": [
+        {
+          "name": "List open orders",
+          "request": { "method": "GET", "header": [{ "key": "X-Trace", "value": "{{$guid}}" }],
+            "url": { "raw": "{{baseUrl}}/orders?status=open", "host": ["{{baseUrl}}"], "path": ["orders"], "query": [{ "key": "status", "value": "open" }] } },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.collectionVariables.set(\"firstOrder\", pm.response.json().items[0].id);"] } }]
+        },
+        {
+          "name": "Get order",
+          "request": { "method": "GET", "header": [],
+            "url": { "raw": "{{baseUrl}}/orders/:orderId", "host": ["{{baseUrl}}"], "path": ["orders", ":orderId"], "variable": [{ "key": "orderId", "value": "{{firstOrder}}" }] } }
+        },
+        {
+          "name": "Create order",
+          "request": { "method": "POST", "header": [],
+            "body": { "mode": "raw", "raw": "{\"sku\":\"TEL-DWARF3\",\"quantity\":1}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/orders" },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.expect(pm.response.code).to.eql(201);", "if (pm.response.json().total > 100) { postman.setNextRequest(null); }"] } }]
+        }
+      ]
+    },
+    {
+      "name": "Third party echo",
+      "request": { "method": "POST", "header": [],
+        "body": { "mode": "urlencoded", "urlencoded": [{ "key": "q", "value": "dwarf 3" }, { "key": "skip", "value": "x", "disabled": true }] },
+        "url": "{{baseUrl}}/orders" }
+    }
+  ]
+}
