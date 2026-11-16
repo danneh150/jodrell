@@ -138,10 +138,24 @@ export async function startServer({ store, specs, runner, collections, auth, por
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, uiBase);
     const p = url.pathname;
+    // No framing (clickjacking), no MIME sniffing, no referrers.
+    res.setHeader("x-frame-options", "DENY");
+    res.setHeader("content-security-policy", "frame-ancestors 'none'");
+    res.setHeader("x-content-type-options", "nosniff");
+    res.setHeader("referrer-policy", "no-referrer");
     try {
-      // Only accept requests from this machine's own pages and tools.
+      // Only this server's own pages and local tools may use it:
+      // - Host must name this server, which stops DNS rebinding (a website
+      //   whose domain is re-pointed at 127.0.0.1).
+      // - Origin, when a browser sends one, must be this server itself, not
+      //   another site or another local app's page.
+      // - Writes must be JSON, which browsers can't send cross-site without a
+      //   preflight that this server never approves.
+      const hostOk = new Set([`127.0.0.1:${actual}`, `localhost:${actual}`, `[::1]:${actual}`]);
+      if (!hostOk.has(String(req.headers.host || "").toLowerCase())) return send(res, 403, { error: "This request isn't addressed to jodrell's own server" });
       const origin = req.headers.origin;
-      if (origin && !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return send(res, 403, { error: "Cross-origin requests are not allowed" });
+      if (origin && origin !== `http://127.0.0.1:${actual}` && origin !== `http://localhost:${actual}`) return send(res, 403, { error: "Cross-origin requests are not allowed" });
+      if (p.startsWith("/api/") && !["GET", "HEAD"].includes(req.method) && !/^application\/json\b/i.test(req.headers["content-type"] || "")) return send(res, 415, { error: "Send JSON, with Content-Type: application/json" });
       if (p === "/mcp") return mcp(req, res, req.method === "POST" ? await readJson(req) : undefined);
       if (STATIC[p]) {
         res.writeHead(200, { "content-type": STATIC[p][1], "cache-control": /^\/(fonts|icons)\/|^\/favicon/.test(p) ? "max-age=86400" : "no-store" });
@@ -189,7 +203,9 @@ export async function startServer({ store, specs, runner, collections, auth, por
     if (!fallbackPort) throw new Error(`Port ${port} is in use. Is jodrell already running? Try --port ${port + 1}.`);
     actual = await listen(0);
   }
-  uiBase = `http://localhost:${actual}`;
+  // 127.0.0.1 rather than localhost: localhost can resolve to ::1 first, where
+  // another local user could be listening on the same port.
+  uiBase = `http://127.0.0.1:${actual}`;
   mcp = createMcpHandler({ store, specs, runner, collections, auth, uiBase: () => uiBase, project, root, refreshSpecs });
 
   // Another process (usually the agent's own jodrell) may write to the same

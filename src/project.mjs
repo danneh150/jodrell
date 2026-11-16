@@ -90,6 +90,9 @@ export async function specSources(root, config, specArgs = []) {
     for (const f of found.specs) if (!sources.some((x) => x.source === f.path)) sources.push({ source: f.path, appUrl: app, origin: "discovered", mtime: f.mtime });
   }
   for (const url of appUrls(config)) {
+    // Only your own machine is checked automatically: a config from a cloned
+    // repository shouldn't make jodrell contact other hosts on start-up.
+    if (!/^https?:\/\/(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?(\/|$)/i.test(url)) continue;
     for (const hit of await probeApp(url)) sources.push({ source: hit.url, text: hit.text, appUrl: url, origin: "app" });
   }
   return { sources, duplicates };
@@ -167,20 +170,25 @@ export function describeSpecs(specs, root) {
 
 const infoFile = (root) => path.join(dataDir(root), "server.json");
 
-export async function runningGui(root, dbFile) {
+// server.json could be stale, or committed to a repository by someone else.
+// Only trust a jodrell on this machine that is using this project's database.
+const LOOPBACK_URL = /^http:\/\/(127\.0\.0\.1|localhost|\[::1\]):\d{1,5}$/;
+const realpath = (f) => { try { return fs.realpathSync(f); } catch { return path.resolve(f); } };
+export async function runningGui(root, dbFile = path.join(dataDir(root), "history.db")) {
   try {
     const info = JSON.parse(fs.readFileSync(infoFile(root), "utf8"));
-    const r = await fetch(`${info.url}/api/info`, { signal: AbortSignal.timeout(800) });
+    if (typeof info.url !== "string" || !LOOPBACK_URL.test(info.url)) return null;
+    const r = await fetch(`${info.url}/api/info`, { signal: AbortSignal.timeout(800), redirect: "error" });
     if (!r.ok) return null;
     const live = await r.json();
-    if (dbFile && path.resolve(live.db) !== path.resolve(dbFile)) return null;
+    if (typeof live.db !== "string" || !path.isAbsolute(live.db) || realpath(live.db) !== realpath(dbFile)) return null;
     return info.url;
   } catch { return null; }
 }
 
 export function recordGui(root, url) {
   fs.mkdirSync(dataDir(root), { recursive: true });
-  fs.writeFileSync(infoFile(root), JSON.stringify({ url, pid: process.pid, startedAt: new Date().toISOString() }, null, 2));
+  fs.writeFileSync(infoFile(root), JSON.stringify({ url, pid: process.pid, startedAt: new Date().toISOString() }, null, 2), { mode: 0o600 });
   const clear = () => {
     try { const cur = JSON.parse(fs.readFileSync(infoFile(root), "utf8")); if (cur.pid === process.pid) fs.unlinkSync(infoFile(root)); } catch {}
   };

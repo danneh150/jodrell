@@ -119,6 +119,27 @@ describe("signing in automatically", () => {
   });
 });
 
+describe("secrets from .env stay in sign-in requests", () => {
+  test("ordinary requests can't use {{env.NAME}}, from the agent or the GUI", async () => {
+    const { runner, store } = await project(loginProfile, { ".env": "SHOP_PASS=secret\nOTHER=topsecretvalue" });
+    process.env.JODRELL_TEST_SECRET = "process-env-secret";
+    try {
+      await assert.rejects(runner.send({ method: "GET", url: `${api.url}/echo?k={{env.JODRELL_TEST_SECRET}}` }), /unresolved variables/);
+      const c = await runner.send({ method: "POST", url: `${api.url}/echo`, body: { k: "{{env.OTHER}}" }, auth: false });
+      assert.equal(JSON.parse(JSON.parse(c.res_body).body).k, "{{env.OTHER}}", "left as written, not filled");
+      await assert.rejects(runner.sendRequest({ method: "POST", url: `${api.url}/echo`, body: { mode: "text", raw: "{{env.OTHER}}" } }, {}), /can only be used in an auth profile's sign-in request/);
+      assert.ok(!JSON.stringify(store.listCalls({ limit: 100 })).includes("process-env-secret"));
+    } finally { delete process.env.JODRELL_TEST_SECRET; }
+  });
+
+  test("filled-in secrets are masked in history, whatever the field is called", async () => {
+    const { runner, store, auth } = await project({ shop: { login: { url: "/login", body: { password: "{{env.SHOP_PASS}}", note: "pw={{env.SHOP_PASS}}" } } } }, { ".env": "SHOP_PASS=secret" });
+    await runner.send({ ...runner.fromOperation("me") });
+    const login = store.getCall(auth.status("shop").loginCallId);
+    assert.ok(!login.req_body.includes("secret"), login.req_body);
+  });
+});
+
 describe("other ways to sign in", () => {
   test("OAuth 2 client credentials, with the token URL from the spec", async () => {
     const spec = shopSpec({ components: { securitySchemes: { oauth: { type: "oauth2", flows: { clientCredentials: { tokenUrl: `${api.url}/oauth/token`, scopes: {} } } } } } });

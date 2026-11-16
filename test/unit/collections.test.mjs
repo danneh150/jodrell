@@ -70,7 +70,7 @@ describe("Postman import", () => {
   test("accepts the Postman API's wrapped export, and rejects other files clearly", () => {
     assert.equal(cols.importPostman({ collection: pm([{ name: "w", request: "https://w.test" }]) }).requests, 1);
     assert.throws(() => cols.importPostman({ hello: 1 }), /doesn't look like a Postman collection/);
-    assert.throws(() => cols.importPostman("not json"), SyntaxError);
+    assert.throws(() => cols.importPostman("not json"), /isn't valid JSON/);
   });
   test("environments: imported, and re-importing updates rather than duplicates", () => {
     const env = JSON.parse(fs.readFileSync(example("demo-shop.postman_environment.json"), "utf8"));

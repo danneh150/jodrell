@@ -76,7 +76,7 @@ Data lives in ${dim(path.relative(process.cwd(), dataDir(root)) || ".jodrell")} 
 `;
 
 const core = () => createCore({ root, specs: args.spec, baseUrl: args["base-url"], db: args.db });
-const guiUrl = async () => (await runningGui(root)) || null;
+const guiUrl = async () => (await runningGui(root, args.db ? path.resolve(args.db) : undefined)) || null;
 
 /* ---------------- init ---------------- */
 async function init() {
@@ -206,7 +206,7 @@ async function mcp() {
   const { startStdio } = await import("../src/mcp.mjs");
   await startStdio({ ...c, uiBase: () => c.gui?.url || "", gui });
   c.watchSpecs(() => c.gui?.broadcast?.("specs", {}));
-  setInterval(async () => { if (c.gui?.external && !(await runningGui(root))) { c.gui = null; gui().catch(() => {}); } }, 15000).unref();
+  setInterval(async () => { if (c.gui?.external && !(await runningGui(root, c.store.file))) { c.gui = null; gui().catch(() => {}); } }, 15000).unref();
 }
 
 /* ---------------- gui ---------------- */

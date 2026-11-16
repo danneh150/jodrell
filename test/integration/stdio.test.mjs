@@ -21,7 +21,7 @@ test("runs over stdio, keeps data in the project, and starts the GUI for links",
     // the GUI starts in the background so replies can link to it
     for (let i = 0; i < 40 && !h.structuredContent.guiUrl; i++) await new Promise((r) => setTimeout(r, 100));
     const again = await client.callTool({ name: "show_history", arguments: {} });
-    assert.match(again.structuredContent.guiUrl, /^http:\/\/localhost:\d+$/);
+    assert.match(again.structuredContent.guiUrl, /^http:\/\/127\.0\.0\.1:\d+$/);
     assert.equal((await fetch(again.structuredContent.guiUrl + "/api/info")).status, 200);
   } finally { await client.close(); await api.close(); }
 });

@@ -122,3 +122,26 @@ describe("the running GUI", () => {
     assert.equal(JSON.parse(fs.readFileSync(path.join(root, ".jodrell/server.json"), "utf8")).pid, process.pid);
   });
 });
+
+test("a server.json that points elsewhere, or at another project's jodrell, is ignored", async () => {
+  const { runningGui, dataDir } = await import("../../src/project.mjs");
+  const { makeCore, startGui } = await import("../helpers.mjs");
+  const fsx = await import("node:fs"); const px = await import("node:path");
+  const core = await makeCore();
+  const gui = await startGui(core);
+  const info = px.join(dataDir(core.root), "server.json");
+  try {
+    fsx.writeFileSync(info, JSON.stringify({ url: gui.url }));
+    assert.equal(await runningGui(core.root, core.store.file), gui.url, "our own server is found");
+    assert.equal(await runningGui(core.root, "/somewhere/else/history.db"), null, "another project's database");
+    for (const url of ["http://evil.example:80", "https://127.0.0.1:1", `${gui.url}/?&calc.exe&`, "http://127.0.0.1.evil.example:4545"]) {
+      fsx.writeFileSync(info, JSON.stringify({ url }));
+      assert.equal(await runningGui(core.root, core.store.file), null, url);
+    }
+  } finally { await gui.close(); }
+});
+
+test("only jodrell's own local pages are opened in the browser", async () => {
+  const { openBrowser } = await import("../../src/open.mjs");
+  for (const url of ["https://evil.example", "file:///etc/passwd", "http://127.0.0.1.evil.example/", "javascript:alert(1)"]) assert.equal(openBrowser(url), false, url);
+});

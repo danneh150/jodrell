@@ -109,13 +109,15 @@ export class Runner {
     return { op, method: op.method, url: url.toString(), headers, body };
   }
 
-  // {{env.NAME}} (your environment and .env), then the active environment.
-  envVars() { return makeVars(this.auth?.env(), this.collections?.activeEnv()?.vars); }
+  // The active environment's variables. {{env.NAME}} (your environment and
+  // .env) is deliberately not here: it's only filled into auth profiles' own
+  // sign-in requests, so a request can't carry your secrets to any host.
+  envVars() { return makeVars(this.collections?.activeEnv()?.vars); }
 
   // auth: false skips auth profiles. authLogin names the profile this request
   // signs in for (set by jodrell's own sign-in).
   async send(args) {
-    let { op, method, url, headers = {}, body, session, note, source = "agent", runId, capture, replayOf, itemId, itemName, expectStatus, auth: useAuth = true, authLogin, authRetry } = args;
+    let { op, method, url, headers = {}, body, session, note, source = "agent", runId, capture, replayOf, itemId, itemName, expectStatus, auth: useAuth = true, authLogin, authRetry, secrets: secretValues = [] } = args;
     if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(String(method || ""))) throw new Error(`"${String(method).slice(0, 40)}" isn't a valid HTTP method.`);
     const sess = session ? this.store.getSession(session) : null;
     const vars = { ...this.envVars(), ...(sess?.vars || {}) };
@@ -160,12 +162,16 @@ export class Runner {
       }
     }
 
+    // Secret values filled into this request (a sign-in's password) are masked wherever it's stored.
+    const scrubList = secretValues.map(String).filter((v) => v.length >= 4).sort((a, b) => b.length - a.length);
+    const scrub = (v) => { if (typeof v !== "string") return v; for (const x of scrubList) { v = v.split(x).join(mask(x)); try { const e = encodeURIComponent(x); if (e !== x) v = v.split(e).join(mask(x)); } catch {} } return v; };
     const started = Date.now();
     const record = {
       run_id: runId, ts: new Date().toISOString(), source, op_id: op?.id, method, url: shownUrl, session, note,
       req_headers: redactHeaders(h), req_body: loginProfile ? redactBody(bodyText(reqBody)) : bodyText(reqBody), replay_of: replayOf,
       item_id: itemId, item_name: itemName, expect_status: expectStatus ? Number(expectStatus) : null,
     };
+    if (scrubList.length) { record.url = scrub(record.url); record.req_body = scrub(record.req_body); record.req_headers = Object.fromEntries(Object.entries(record.req_headers).map(([k, v]) => [k, scrub(v)])); }
 
     let call;
     try {
@@ -261,11 +267,24 @@ export class Runner {
     const col = colId ? this.collections.getCollection(colId) : null;
     const ancestors = item ? this.collections.ancestors(item) : [];
     const sess = session ? this.store.getSession(session) : null;
-    const vars = makeVars(this.auth?.env(), col?.variables, this.collections.activeEnv()?.vars, sess?.vars, extra);
-    const r = resolveRequest(request, { vars, auth: effectiveAuth(request, ancestors, col) });
+    let vars = makeVars(col?.variables, this.collections.activeEnv()?.vars, sess?.vars, extra);
+    const auth = effectiveAuth(request, ancestors, col);
+    let r = resolveRequest(request, { vars, auth });
+    // {{env.NAME}} is filled only into an auth profile's own sign-in request
+    // (the GUI's "Open sign-in request"), and the values are masked in history.
+    let secrets = [];
+    const envNames = r.unresolved.filter((v) => v.startsWith("env."));
+    if (envNames.length) {
+      if (!this.auth?.loginFor(r.method, r.url)) throw Object.assign(new Error(`${envNames.map((v) => `{{${v}}}`).join(", ")}: secrets from .env or your environment can only be used in an auth profile's sign-in request, so they can't be sent to other hosts. Use an environment variable instead.`), { status: 400 });
+      const env = this.auth.env();
+      const known = Object.fromEntries(envNames.filter((k) => env[k] !== undefined).map((k) => [k, env[k]]));
+      secrets = Object.values(known);
+      vars = makeVars(known, vars);
+      r = resolveRequest(request, { vars, auth });
+    }
     if (r.unresolved.length) throw Object.assign(new Error(`Unresolved variables: ${r.unresolved.map((v) => `{{${v}}}`).join(", ")}. Set them in the environment or the collection's variables.`), { status: 400 });
     const call = await this.send({
-      method: r.method, url: r.url, headers: r.headers, body: r.body, session, note, source, runId,
+      method: r.method, url: r.url, headers: r.headers, body: r.body, session, note, source, runId, secrets,
       itemId: item?.id, itemName: item ? this.collections.pathOf(item) : null, expectStatus: request.expectStatus,
     });
     if (!call.error && request.captures?.length) call.captured = this.applyRequestCaptures(request.captures, call.ctx, colId);

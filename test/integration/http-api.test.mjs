@@ -137,3 +137,31 @@ describe("ports", () => {
     ui.server.closeAllConnections(); ui.server.close(); blocker.close();
   });
 });
+
+describe("only jodrell's own pages and local tools can use the server", () => {
+  test("DNS rebinding, other sites, other local apps and cross-site form posts are refused", async () => {
+    const { makeCore, startGui } = await import("../helpers.mjs");
+    const core = await makeCore();
+    const gui = await startGui(core);
+    const port = new URL(gui.url).port;
+    const http = await import("node:http");
+    // fetch won't let us set Host, so use node:http directly.
+    const raw = (path, { method = "GET", headers = {}, body } = {}) => new Promise((resolve, reject) => {
+      const r = http.request({ host: "127.0.0.1", port, path, method, headers }, (res) => { let d = ""; res.on("data", (c) => (d += c)); res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: d })); });
+      r.on("error", reject); if (body) r.write(body); r.end();
+    });
+    try {
+      assert.equal((await raw("/api/environments", { headers: { host: `rebind.attacker.example:${port}` } })).status, 403, "rebinding");
+      assert.equal((await raw("/api/environments", { headers: { host: `127.0.0.1:${port}` } })).status, 200, "the CLI and agent, with no Origin");
+      assert.equal((await raw("/api/environments", { headers: { host: `localhost:${port}`, origin: `http://localhost:${port}` } })).status, 200, "the GUI itself");
+      assert.equal((await raw("/api/environments", { headers: { host: `127.0.0.1:${port}`, origin: "http://localhost:3000" } })).status, 403, "another local app's page");
+      assert.equal((await raw("/api/environments", { headers: { host: `127.0.0.1:${port}`, origin: "https://evil.example" } })).status, 403, "another website");
+      const form = await raw("/api/send", { method: "POST", headers: { host: `127.0.0.1:${port}`, "content-type": "text/plain;charset=UTF-8" }, body: JSON.stringify({ request: { method: "GET", url: "http://127.0.0.1:1/" } }) });
+      assert.equal(form.status, 415, "simple (no-preflight) posts are refused");
+      const page = await raw("/", { headers: { host: `127.0.0.1:${port}` } });
+      assert.equal(page.headers["x-frame-options"], "DENY");
+      assert.match(page.headers["content-security-policy"], /frame-ancestors 'none'/);
+      assert.equal(page.headers["x-content-type-options"], "nosniff");
+    } finally { await gui.close(); }
+  });
+});

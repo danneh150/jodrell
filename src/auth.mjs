@@ -57,15 +57,16 @@ function jwtExpiry(token) {
 
 // Variables in sign-in details: {{env.NAME}} (environment and .env) and the
 // active environment's own variables.
-function fillTemplate(value, vars, missing) {
+// used collects the {{env.*}} values filled in, so they can be masked in history.
+function fillTemplate(value, vars, missing, used = []) {
   if (typeof value === "string") {
     return value.replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (m, k) => {
-      if (vars[k] !== undefined && vars[k] !== null) return String(vars[k]);
+      if (vars[k] !== undefined && vars[k] !== null) { if (k.startsWith("env.")) used.push(String(vars[k])); return String(vars[k]); }
       missing.add(k); return m;
     });
   }
-  if (Array.isArray(value)) return value.map((v) => fillTemplate(v, vars, missing));
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, fillTemplate(v, vars, missing)]));
+  if (Array.isArray(value)) return value.map((v) => fillTemplate(v, vars, missing, used));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, fillTemplate(v, vars, missing, used)]));
   return value;
 }
 
@@ -263,10 +264,11 @@ export class Auth {
 
     const t = this.loginTemplate(p);
     if (!t) fail(p.kind === "clientCredentials" ? `No token URL: add "tokenUrl" to clientCredentials, or an oauth2 clientCredentials flow to the spec.` : "The sign-in request is incomplete: give \"op\", or \"url\" and \"method\".");
-    const req = fillTemplate({ url: t.url, headers: t.headers, body: t.body }, vars, missing);
+    const used = [];
+    const req = fillTemplate({ url: t.url, headers: t.headers, body: t.body }, vars, missing, used);
     if (missing.size) fail(missingMsg());
     const body = t.form && req.body && typeof req.body === "object" ? new URLSearchParams(Object.entries(req.body).filter(([, v]) => v !== undefined && v !== null).map(([k, v]) => [k, String(v)])) : req.body;
-    const call = await runner.send({ op: t.op, method: t.method, url: req.url, headers: req.headers, body, source, runId, note: `jodrell signed in for "${p.name}"`, auth: false, authLogin: p.name });
+    const call = await runner.send({ op: t.op, method: t.method, url: req.url, headers: req.headers, body, source, runId, note: `jodrell signed in for "${p.name}"`, auth: false, authLogin: p.name, secrets: used });
     if (call.error) fail(`Couldn't reach the sign-in endpoint: ${call.error}`);
     const st = this.state(p.name);
     if (!this.fresh(st)) throw new Error(st.error || "Signing in didn't produce a usable token.");

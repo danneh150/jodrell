@@ -65,7 +65,7 @@ describe("making requests", () => {
     const r = await call("send_request", { method: "GET", url: `${api.url}/users/5`, note: "checking a user" });
     assert.match(r.text, /HTTP 200 in \d+ ms/); assert.match(r.text, /"name": "Ada"/); assert.match(r.text, /#call-\d+/);
     assert.equal(r.structuredContent.view, "call"); assert.equal(r.structuredContent.call.note, "checking a user");
-    assert.ok(r.structuredContent.guiUrl.startsWith("http://localhost:"));
+    assert.ok(r.structuredContent.guiUrl.startsWith("http://127.0.0.1:"));
   });
   test("relative URLs use the first spec's base URL", async () => {
     const r = await call("send_request", { url: "/users/rel" });

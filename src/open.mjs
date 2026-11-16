@@ -7,9 +7,15 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url);
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
+// Only jodrell's own local pages are opened, and never through a shell
+// (cmd would treat & in a URL as a command separator).
 export function openBrowser(url) {
-  const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
-  const a = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  let u;
+  try { u = new URL(url); } catch { return false; }
+  if (u.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(u.hostname)) return false;
+  url = u.toString();
+  const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "rundll32" : "xdg-open";
+  const a = process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url];
   try { spawn(opener, a, { stdio: "ignore", detached: true }).on("error", () => {}).unref(); return true; } catch { return false; }
 }
 

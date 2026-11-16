@@ -295,7 +295,8 @@ export class Collections {
 
   // ---- Postman import (collection v2.0/v2.1, or an environment file)
   importPostman(input) {
-    const data = typeof input === "string" ? JSON.parse(input) : input;
+    let data = input;
+    if (typeof input === "string") { try { data = JSON.parse(input); } catch { throw Object.assign(new Error("That isn't valid JSON. Export the collection from Postman as Collection v2.1, or the environment as JSON."), { status: 400 }); } }
     if (data?.values && (data._postman_variable_scope || data.name) && !data.item) {
       const vars = kv(data.values);
       const existing = this.findEnv(data.name);

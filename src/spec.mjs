@@ -22,7 +22,9 @@ async function readSource(src) {
 
 function parse(text) {
   const t = text.replace(/^\uFEFF/, "").trim();
-  return t.startsWith("{") ? JSON.parse(t) : YAML.parse(t);
+  // V8's JSON errors quote the file's text; don't pass that on (it could be any file named in a config).
+  if (t.startsWith("{")) { try { return JSON.parse(t); } catch { throw new Error("isn't valid JSON"); } }
+  return YAML.parse(t);
 }
 
 // Resolve internal $refs ("#/components/..." or "#/definitions/...") in place.
