@@ -208,6 +208,23 @@ export async function ensureGui(core, { port, quiet = true } = {}) {
   return (core.gui = { url: ui.uiBase, server: ui.server, external: false, broadcast: ui.broadcast });
 }
 
+// Write a file in the project, refusing to follow a symlink or leave the
+// project folder: a cloned repository could make CLAUDE.md or
+// .claude/settings.json a link to a file elsewhere (like your global settings).
+export function writeInProject(root, file, data) {
+  const realRoot = fs.realpathSync(root);
+  const rel = path.relative(root, file);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) throw new Error(`${file} is outside the project`);
+  let cur = realRoot;
+  for (const part of rel.split(path.sep)) {
+    cur = path.join(cur, part);
+    let st; try { st = fs.lstatSync(cur); } catch { break; } // doesn't exist yet: fine
+    if (st.isSymbolicLink()) throw new Error(`${path.relative(realRoot, cur)} is a symbolic link, so jodrell won't write through it`);
+  }
+  fs.mkdirSync(path.dirname(path.join(realRoot, rel)), { recursive: true });
+  fs.writeFileSync(path.join(realRoot, rel), data);
+}
+
 // Earlier versions added ".capcom/" to .gitignore. Remove exactly that, so a
 // different tool's committed .capcom/ folder isn't hidden from git.
 export function removeOldGitignore(root) {
@@ -216,7 +233,7 @@ export function removeOldGitignore(root) {
   const cur = fs.readFileSync(gi, "utf8");
   const next = cur.replace(/\n?# capcom request history and local data\n\.capcom\/\n?/, "\n");
   if (next === cur) return false;
-  fs.writeFileSync(gi, next.replace(/\n{3,}/g, "\n\n"));
+  writeInProject(root, gi, next.replace(/\n{3,}/g, "\n\n"));
   return true;
 }
 
@@ -224,6 +241,6 @@ export function ensureGitignore(root) {
   const gi = path.join(root, ".gitignore");
   const cur = fs.existsSync(gi) ? fs.readFileSync(gi, "utf8") : "";
   if (/^\/?\.jodrell\/?\s*$/m.test(cur)) return false;
-  fs.writeFileSync(gi, cur + (cur && !cur.endsWith("\n") ? "\n" : "") + "\n# jodrell request history and local data\n.jodrell/\n");
+  writeInProject(root, gi, cur + (cur && !cur.endsWith("\n") ? "\n" : "") + "\n# jodrell request history and local data\n.jodrell/\n");
   return true;
 }

@@ -3,7 +3,7 @@ import http from "node:http";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createMcpHandler } from "./mcp.mjs";
-import { mask } from "./checks.mjs";
+import { mask, isSecretHeader } from "./checks.mjs";
 import { buildReport, parseSince } from "./html.mjs";
 
 const uiFile = (f) => fileURLToPath(new URL(`../ui/${f}`, import.meta.url));
@@ -29,7 +29,7 @@ const clean = (call) => { if (!call) return call; const { ctx, ...rest } = call;
 export const publicSession = (s) => ({
   name: s.name,
   headers: Object.fromEntries(Object.entries(s.headers || {}).map(([k, v]) => [k, typeof v === "object" ? `${mask(v.value)} (${v.host} only)` : mask(v)])),
-  vars: s.vars,
+  vars: Object.fromEntries(Object.entries(s.vars || {}).map(([k, v]) => [k, isSecretHeader(k) ? mask(v) : v])),
   cookies: Object.entries(s.cookies || {}).filter(([, v]) => typeof v === "object").flatMap(([dom, c]) => Object.keys(c).map((n) => `${n} (${dom})`)),
   updated_at: s.updated_at,
 });

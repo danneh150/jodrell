@@ -12,7 +12,16 @@
 - **See sign-in at a glance in the GUI:** a Sign-in section shows each API as signed in, expiring, expired or needing you (with the reason). Open one to sign in again, open its sign-in request to try it by hand, see the last sign-in, or sign out. The status bar and the request builder show it too.
 - **For your agent:** `auth_status` and `sign_in` tools, and `auth: false` on `send_request` and `call_operation`.
 - **Sign-in calls are masked:** passwords, client secrets and tokens in their bodies aren't stored.
-- **`{{env.NAME}}`** works everywhere `{{variables}}` do.
+- **Security review.** A full audit of the server, rendering, secrets and code execution, with every finding fixed:
+  - **Critical:** a cookie with `Domain=__proto__` from any API could change JavaScript's built-in objects and make an auth profile run a command. Cookie domains must now cover the host that set them, and auth settings are read in a way that can't be affected.
+  - **A project's auth profiles need your approval** (GUI or `npx jodrell trust`) before they sign in or run anything, so a cloned repository can't.
+  - **`{{env.NAME}}` only goes into an auth profile's own sign-in request,** never ordinary requests.
+  - **The GUI server** now blocks DNS rebinding, other local apps' pages, cross-site form posts and framing, and links use `127.0.0.1`.
+  - **Tokens no longer reach lookalike hosts** (`api.test.evil.example`, other ports): base URLs are matched by origin and path.
+  - **More is masked:** short secrets entirely, more header names, secret query parameters, passwords in request bodies, and sign-in tokens whatever they're called. Replay only re-sends secrets to the same host.
+  - **Copy as curl** quotes every argument, and terminal output can't be hijacked by escape sequences.
+  - **Hostile files can't hang jodrell:** specs with deep `$ref` chains, paths full of parameters, long script lines and long `.env` lines, and the guard's own pattern.
+  - **Also:** a committed `.jodrell/server.json` can't redirect jodrell; `init` won't write through symbolic links; `appUrl` is only probed on your computer; parse errors don't quote other files; malformed HTTP methods are refused.
 - **Fixed:** replay could pick up saved auth headers from another project open in the same process.
 - **README:** where jodrell came from, a guide to getting a good spec, and a new Signing in section.
 

@@ -698,6 +698,7 @@ function authLook(a) {
     case "rejected": return { label: "Token rejected: signs in again on the next request", short: "Rejected", cls: "a-warn" };
     case "failed": return { label: "Sign-in failed: needs you", short: "Needs you", cls: "a-err" };
     case "misconfigured": return { label: "Set-up problem: needs you", short: "Set-up problem", cls: "a-err" };
+    case "untrusted": return { label: "Waiting for you to allow it", short: "Allow?", cls: "a-warn" };
     default: return { label: "Not signed in: signs in on the first request", short: "Not signed in", cls: "a-idle" };
   }
 }
@@ -781,6 +782,14 @@ function authDetail(name) {
   row("Last attempt", a.attemptedAt && a.attemptedAt !== a.obtainedAt ? `${clock(a.attemptedAt)} (${ago(a.attemptedAt)})` : null);
   wrap.append(dl);
   const busy = a.state === "misconfigured";
+  if (a.state === "untrusted") {
+    wrap.append(h("div", { class: "row" },
+      h("button", { class: "btn primary", onclick: async () => {
+        try { await api(`/api/auth/${encodeURIComponent(a.name)}/trust`, { method: "POST", body: {} }); await loadAuth(); refreshAuthUi(); toast(`Allowed ${a.name}`); } catch (e) { toast(e.message); }
+      } }, "Allow")),
+      h("p", { class: "help" }, "Only allow settings you expect: a cloned project's settings could send your secrets to another server or run commands. You're asked again if they change."));
+    return wrap;
+  }
   wrap.append(h("div", { class: "row" },
     h("button", { class: "btn" + (a.needsAction || ["expired", "rejected", "none"].includes(a.state) ? " primary" : ""), disabled: busy, onclick: () => signInNow(a.name), title: "Sign in now, even if the token is still valid" }, icon("refresh"), a.token ? "Sign in again" : "Sign in now"),
     a.login ? h("button", { class: "btn", onclick: () => openSignInRequest(a.name), title: "Open the sign-in request to send it yourself, or change what it sends" }, icon("send"), "Open sign-in request") : null,
@@ -1630,7 +1639,7 @@ function renderResPane(t) {
   const copy = h("button", { class: "btn quiet sm", onclick: () => { navigator.clipboard.writeText(c.res_body || ""); toast("Copied the response body"); } }, "Copy");
   const curlB = h("button", { class: "btn quiet sm", onclick: () => { navigator.clipboard.writeText(curl(c)); toast("Copied as curl (secret headers masked)"); } }, "Copy as curl");
   p.replaceChildren(head, noteLine || "", h("div", { class: "subtabs", role: "tablist" }, ...tabs.map(([k, l, n]) => h("button", { class: "subtab", role: "tab", "aria-selected": t.resTab === k, onclick: () => { t.resTab = k; renderResPane(t); } }, l, n ? h("span", { class: "n" + (k === "schema" ? " bad" : "") }, n) : null)), actions, curlB, copy), pane);
-  if (c.error) { pane.append(h("p", { style: "color:var(--err)" }, c.error), h("p", { class: "help" }, "Check the URL and that the server is reachable from this machine.")); if (t.resTab === "body") return; }
+  if (c.error) { pane.append(h("p", { style: "color:var(--err)" }, c.error), /^Not sent: couldn't sign in/.test(c.error) ? h("p", { class: "help" }, "See Sign-in in the navigation pane.") : h("p", { class: "help" }, "Check the URL and that the server is reachable from this machine.")); if (t.resTab === "body") return; }
   if (t.resTab === "body") {
     const data = parsed(c.res_body);
     const tbl = data !== undefined ? tableRows(data) : null;

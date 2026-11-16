@@ -116,6 +116,7 @@ export function convertScript(script) {
   let converted = 0, meaningful = 0;
   for (const raw of lines) {
     const l = raw.trim();
+    if (l.length > 1000) { meaningful++; continue; } // nothing we convert is this long; skip rather than risk slow matching
     if (!l || l.startsWith("//") || /^[{}()[\];,]+$/.test(l) || /^pm\.test\(.*function\s*\(\)\s*\{$/.test(l) || /^pm\.test\(.*=>\s*\{$/.test(l) || /^\}\s*\)\s*;?$/.test(l)) continue;
     if (/(?:var|let|const)\s+\w+\s*=\s*(?:pm\.response\.json\(\)|JSON\.parse)/.test(l)) continue;
     meaningful++;

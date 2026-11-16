@@ -131,6 +131,7 @@ fs.writeFileSync("app.html", buildAppHtml());
 
 def main():
     os.makedirs(OUT, exist_ok=True)
+    os.environ["JODRELL_HOME"] = tempfile.mkdtemp(prefix="jodrell-home-")  # approvals for the example project only, not your own
     root = build_project()
     q = json.dumps(ROOT)
     print("example project:", root)
@@ -222,7 +223,8 @@ def main():
         json.dump({"auth": {"shop": {"login": {"op": "login", "body": {"email": "dev@example.com", "password": "{{env.SHOP_PASS}}"}}},
                             "partner": {"value": "{{env.PARTNER_KEY}}", "hosts": ["api.partner.example"]}}}, open(os.path.join(root, "jodrell.config.json"), "w"), indent=2)
         open(os.path.join(root, ".env"), "w").write("SHOP_PASS=secret\n")
-        api(gui, "/api/auth/shop/signin", "POST")
+        api(gui, "/api/auth/shop/trust", "POST", {}); api(gui, "/api/auth/partner/trust", "POST", {})
+        api(gui, "/api/auth/shop/signin", "POST", {})
         pg = page(); tree(pg, "partner"); shot(pg, "sign-in.png")
         b.close()
 

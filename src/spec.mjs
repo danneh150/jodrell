@@ -30,17 +30,21 @@ function parse(text) {
 // Resolve internal $refs ("#/components/..." or "#/definitions/...") in place.
 function deref(doc) {
   const lookup = (ref) => ref.slice(2).split("/").reduce((o, k) => (o == null ? o : o[decodeURIComponent(k).replace(/~1/g, "/").replace(/~0/g, "~")]), doc);
+  // Each $ref is resolved once and shared, so a spec whose schemas each refer
+  // to the next one twice can't make loading take exponential time.
+  const done = new Map();
   const walk = (node, stack) => {
     if (Array.isArray(node)) return node.map((n) => walk(n, stack));
     if (!node || typeof node !== "object") return node;
     if (typeof node.$ref === "string" && node.$ref.startsWith("#/")) {
       if (stack.includes(node.$ref)) return { description: `circular reference to ${node.$ref}` };
+      if (done.has(node.$ref)) return done.get(node.$ref);
       const target = lookup(node.$ref);
-      return target === undefined ? node : walk(target, [...stack, node.$ref]);
+      const out = target === undefined ? node : walk(target, [...stack, node.$ref]);
+      done.set(node.$ref, out);
+      return out;
     }
-    const out = {};
-    for (const [k, v] of Object.entries(node)) out[k] = walk(v, stack);
-    return out;
+    return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, walk(v, stack)]));
   };
   return walk(doc, []);
 }
@@ -117,6 +121,23 @@ function buildOps(doc, specName, baseUrl, specSource) {
 }
 
 const norm = (s) => (typeof s === "string" ? { source: s } : s);
+
+// Does a request path fit a spec path like /orders/{id}? Compared segment by
+// segment, with no regex built from the whole path, so it's always quick.
+const segRe = new Map();
+function segmentMatches(tpl, seg) {
+  if (!tpl.includes("{")) return tpl === seg;
+  if (/^\{[^}]+\}$/.test(tpl)) return seg.length > 0;
+  // Mixed, like {name}.json: adjacent parameters count as one, so the pattern stays simple.
+  let re = segRe.get(tpl);
+  if (!re) { re = new RegExp("^" + tpl.split(/(?:\{[^}]*\})+/).map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[^/]+") + "$"); segRe.set(tpl, re); }
+  return seg.length <= 2048 && re.test(seg);
+}
+function pathMatches(template, pathname) {
+  const t = template.split("/"), p = pathname.replace(/\/$/, "").split("/");
+  if (t.length !== p.length && !(t.length === p.length + 1 && t[t.length - 1] === "")) return false;
+  return p.every((seg, i) => segmentMatches(t[i] ?? "", seg));
+}
 
 export class SpecIndex {
   // sources: paths, URLs, or { source, text?, baseUrl?, origin? }
@@ -207,8 +228,7 @@ export class SpecIndex {
       let basePath = "", baseOrigin = "";
       try { const b = new URL(op.baseUrl); basePath = b.pathname.replace(/\/$/, ""); baseOrigin = b.origin; } catch {}
       if (origin && baseOrigin && origin !== baseOrigin) continue; // a third-party URL that happens to share a path
-      const re = new RegExp("^" + basePath + op.path.replace(/[.*+?^$()|[\]\\]/g, "\\$&").replace(/\{[^}]+\}/g, "[^/]+") + "/?$");
-      if (re.test(pathname)) return op;
+      if (pathMatches(basePath + op.path, pathname)) return op;
     }
     return null;
   }

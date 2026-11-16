@@ -67,9 +67,9 @@ export function readDotEnv(root) {
   let text = "";
   try { text = fs.readFileSync(path.join(root, ".env"), "utf8"); } catch { return out; }
   for (const line of text.split(/\r?\n/)) {
-    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][\w.]*)\s*=\s*(.*?)\s*$/);
+    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][\w.]*)\s*=(.*)$/);
     if (!m) continue;
-    let v = m[2];
+    let v = m[2].trim();
     if (/^".*"$/.test(v)) v = v.slice(1, -1).replace(/\\n/g, "\n").replace(/\\"/g, '"');
     else if (/^'.*'$/.test(v)) v = v.slice(1, -1);
     else v = v.replace(/\s+#.*$/, "");

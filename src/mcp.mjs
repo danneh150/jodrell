@@ -231,7 +231,7 @@ function buildServer({ store, specs, runner, collections, auth, uiBase: base, ct
   }, async () => {
     const all = store.sessions();
     if (!all.length) return text("No sessions yet. Create one with set_session, or pass session on a call.");
-    return text(all.map((s) => `${s.name}: headers {${Object.entries(s.headers).map(([k, v]) => typeof v === "object" ? `${k}: ${mask(v.value)} (${v.host} only)` : `${k}: ${mask(v)} (all hosts)`).join(", ")}} vars ${JSON.stringify(s.vars)} cookies [${Object.entries(s.cookies).filter(([, c]) => typeof c === "object").flatMap(([d, c]) => Object.keys(c).map((n) => n + "@" + d)).join(", ")}]`).join("\n"));
+    return text(all.map((s) => `${s.name}: headers {${Object.entries(s.headers).map(([k, v]) => typeof v === "object" ? `${k}: ${mask(v.value)} (${v.host} only)` : `${k}: ${mask(v)} (all hosts)`).join(", ")}} vars ${JSON.stringify(Object.fromEntries(Object.entries(s.vars).map(([k, v]) => [k, isSecretHeader(k) ? mask(v) : v])))} cookies [${Object.entries(s.cookies).filter(([, c]) => typeof c === "object").flatMap(([d, c]) => Object.keys(c).map((n) => n + "@" + d)).join(", ")}]`).join("\n"));
   });
 
   server.registerTool("get_history", {

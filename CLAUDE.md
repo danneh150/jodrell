@@ -7,7 +7,7 @@ jodrell is **the AI-first API client**: an alternative to Postman, Bruno and Ins
 ## Commands
 
 ```bash
-npm test                    # 144 unit + integration tests, ~5 s, no network (run npm ci first in a fresh clone)
+npm test                    # 166 unit + integration tests, ~5 s, no network (run npm ci first in a fresh clone)
 npm run test:unit           # test/unit
 npm run test:integration    # test/integration
 npm run test:coverage       # ~96% line coverage
@@ -48,6 +48,7 @@ python3 assets/icon-source.py   # regenerate the pixel-art icon
 - **MCP Apps uses `@modelcontextprotocol/ext-apps@1.7.5`,** the last release compatible with `@modelcontextprotocol/sdk` 1.x. Don't upgrade to ext-apps 2.x without moving to SDK 2. The view inlines `app-with-deps.js`, rewriting its final `export` to `window.McpApps`.
 - **GUI design:** an Explorer-style layout with no tabs. One thing open at a time; drafts auto-saved (localStorage `jodrell:` keys, migrated from `capcom:`/`apiscope:`); a three-pane list/detail view; the feed as the home view. Green "meadow" theme with a dark "night meadow" variant. Pixelify Sans for headings only, with ligatures turned off (its "fi" reads as "A").
 - **Auth profiles:** tokens live in the `auth_state` table in `.jodrell/history.db` (git-ignored), so the GUI and the agent's process share one sign-in; passwords and client secrets are never stored, only read from `.env`/the environment when signing in. Config is read fresh on each use, so edits apply without a restart. A request's own auth always wins over a profile. Sign-in request and response bodies go through `redactBody`. Tokens jodrell adds aren't kept for replay: replay adds the current one.
+- **Security model (from the November 2026 audit):** the GUI server checks Host (DNS rebinding), accepts only its own Origin, requires JSON for `/api` writes, and sends no-frame headers. Auth profiles need approval (`trustFile()` in auth.mjs, outside the project, keyed by root + profile settings); `{{env.*}}` is only filled into a profile's own sign-in request; config is read through `plain()` (no prototype). Cookie domains must cover the issuing host. History masks secret headers, query params and body fields (`redactUrl`/`redactBody`); replay restores real values from memory, same host only. Don't build regexes from whole spec paths or untrusted strings: see `test/unit/slow-inputs.test.mjs`. Known accepted risk: other local OS users can reach the GUI server (no per-run token yet).
 - **Positioning:** "the AI-first API client". Postman, Bruno and Insomnia all have AI features, so the claim is that the agent is the primary user, not that the others lack AI. Keep the README comparison fair and dated.
 
 ## Conventions

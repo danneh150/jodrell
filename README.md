@@ -314,7 +314,9 @@ Add `auth` to `jodrell.config.json`:
 }
 ```
 
-Put the password in `.env` in your project (`SHOP_PASS=...`), or in your environment. That's all it needs:
+Put the password in `.env` in your project (`SHOP_PASS=...`), or in your environment. Then allow the profile once: open it under **Sign-in** in the GUI and choose **Allow**, or run `npx jodrell trust shop`. jodrell asks because a project's settings could send your secrets to another server or run commands, and a cloned repository's settings aren't yours. It asks again if the settings change. Approvals are kept in your user folder (`~/.config/jodrell/`), not in the project.
+
+That's all it needs:
 
 - **Which requests it applies to:** the spec the login operation belongs to. Requests to other APIs never get the token.
 - **Where the token goes:** whatever the spec's `securitySchemes` say (a bearer token, an API key header, query parameter or cookie), or `Authorization: Bearer` if it doesn't say.
@@ -331,17 +333,19 @@ Put the password in `.env` in your project (`SHOP_PASS=...`), or in your environ
 | `"command": "gcloud auth print-access-token"` | A token from a command, such as a cloud CLI. It's fetched again after 5 minutes, or `"ttl"` seconds. |
 | `"value": "{{env.API_KEY}}"` | A fixed token or API key. |
 
-**Optional settings:** `"spec"` (a spec's title) or `"hosts"` (a list of host names) to say which requests it's for; `"apply"` to say where the token goes (`{ "header": "X-Auth-Token" }`, `{ "query": "key" }` or `{ "cookie": "sid" }`); `"token"` and `"expiresIn"` to say where they are in the response (like `"body.data.jwt"`); and `"ttl"` in seconds.
+**Optional settings:** `"spec"` (a spec's title) or `"hosts"` (a list of full host names, which also covers their subdomains) to say which requests it's for; `"apply"` to say where the token goes (`{ "header": "X-Auth-Token" }`, `{ "query": "key" }` or `{ "cookie": "sid" }`); `"token"` and `"expiresIn"` to say where they are in the response (like `"body.data.jwt"`); and `"ttl"` in seconds.
 
 **You stay in control:**
 
 - **A request with its own auth** (an `Authorization` header, or auth set in the request builder) is sent as it is.
 - **Your agent can turn it off** for one request with `auth: false`, to test what happens when signed out.
 - **Every sign-in is in the history,** marked "jodrell signed in", with the password and token masked.
+- **Secrets stay in sign-in requests.** `{{env.NAME}}` is only filled into a profile's own sign-in request, and only for the names that profile uses. Ordinary requests can't use it, so a request can't carry your environment's secrets to another server.
+- **A command only gets `{{env.NAME}}` values,** quoted, so a value can't add shell syntax.
 
 <p align="center"><img src="docs/images/sign-in.png" alt="The Sign-in section of the GUI: the shop profile is signed in with 59 minutes left, and the partner profile needs you because PARTNER_KEY isn't set" width="100%"></p>
 
-**In the GUI,** the **Sign-in** section shows each profile in green when it's signed in, amber when the token is expiring, has expired or was rejected (jodrell signs in again by itself), and red when it needs you, with the reason: a wrong password, or a secret that isn't set. The status bar shows the same at a glance, and the request builder shows which sign-in a request will use. Open a profile to:
+**In the GUI,** the **Sign-in** section shows each profile in green when it's signed in, amber when it's waiting for you to allow it or the token is expiring, has expired or was rejected (jodrell signs in again by itself), and red when it needs you, with the reason: a wrong password, or a secret that isn't set. The status bar shows the same at a glance, and the request builder shows which sign-in a request will use. Open a profile to:
 
 - **Sign in again** straight away
 - **Open the sign-in request**, to send it yourself or change what it sends. If it works, jodrell keeps the new token.
@@ -384,10 +388,10 @@ Anything else is kept, read-only, on the request, and the import tells you how m
   - **Generated values:** `{{$guid}}`, `{{$timestamp}}`, `{{$isoTimestamp}}` and `{{$randomInt}}` are generated when the request is sent.
   - **Missing variables:** the request isn't sent, and you're told which variable is missing.
 - **Saving from responses:** values saved after a response go into the active environment, or the collection if no environment is active, as Postman would do.
-- **Cookies are kept per host,** in a named session ("default" in the GUI). A cookie only goes back to the domain that set it.
-- **Captured auth headers** are tied to the host that issued them too, so a token from one API is never sent to another.
+- **Cookies are kept per host,** in a named session ("default" in the GUI). A cookie only goes back to the host that set it (and its subdomains, if it says so), and a server can't set cookies for other hosts.
+- **Captured auth headers** are tied to the host that issued them too (any port, and its subdomains), so a token from one API isn't sent to another.
 - **For APIs you sign in to often,** an auth profile is simpler than capturing tokens by hand. See [Signing in](#signing-in).
-- **`{{env.NAME}}`** reads from `.env` in your project, or your environment, everywhere `{{variables}}` work.
+- **`{{env.NAME}}`** reads from `.env` in your project, or your environment, but only in auth profiles and their sign-in requests. See [Signing in](#signing-in).
 
 ## Reference
 
@@ -427,6 +431,7 @@ This is all optional. Put it in `jodrell.config.json`, or under a `"jodrell"` ke
 | `npx jodrell import <file\|url>` | Import a Postman collection or environment. |
 | `npx jodrell watch` | Stream requests into the terminal as they happen. Add `--detail` for full bodies. |
 | `npx jodrell show <n>` | Print request number `n` in full. |
+| `npx jodrell trust [name]` | Allow one of this project's auth profiles. With no name, lists them and what each does. |
 | `npx jodrell mcp` | Run as an MCP server over stdio. This is what your agent starts. |
 | `npx jodrell guard` | The Claude Code hook. `init` sets this up for you. |
 | `npx jodrell mcp-config` | Print how to connect other MCP clients. |
@@ -450,8 +455,15 @@ This is all optional. Put it in `jodrell.config.json`, or under a `"jodrell"` ke
 ## Privacy and security
 
 - **Local only.** Everything lives in `.jodrell/` in your project: the history database, collections, environments and reports. `init` git-ignores it. Nothing is sent anywhere except the requests you and your agent make. There's no telemetry, and no fonts or scripts are loaded from the web.
-- **Secrets are masked** before they reach the history, the GUI, agent replies or reports. That covers authorisation headers, API keys, anything named like a token or secret, and cookie values in full.
-- **The GUI server** listens on `127.0.0.1` only, and refuses requests from other websites.
+- **Secrets are masked** before they reach the history, the GUI, agent replies or reports:
+  - headers that carry credentials (authorisation, API keys, anything named like a token, secret, password, session or signature), and cookie values in full
+  - query parameters named like a key, token or signature, and passwords in URLs
+  - fields named like a password or token in request bodies, and the token in a sign-in response
+  - Short secrets are hidden completely; long ones keep a few characters at each end so you can tell them apart. Replay still sends the real values, which are kept in memory, and only to the host they were first sent to.
+- **The GUI server** listens on `127.0.0.1` only. It refuses requests from other websites and other local apps' pages, requests addressed to any other host name (DNS rebinding), and cross-site form posts, and it can't be shown inside another site's frame.
+- **Other accounts on the same computer** can reach the GUI server too, as with most local developer tools. Don't run jodrell on a machine you share with people you don't trust.
+- **A cloned project can't act for you.** Its auth profiles do nothing until you allow them; `init` won't write through symbolic links; a `.jodrell/server.json` in the repository is ignored unless it points at this project's own jodrell on your computer; and its `appUrl` is only checked automatically when it's on your computer.
+- **Your agent's jodrell tools are pre-approved** by `init` (`mcp__jodrell` in `.claude/settings.json`), so your agent can call any URL through jodrell without asking you. That's the point: you see every request in jodrell instead. Remove the entry if you'd rather approve each call.
 - **Responses never run.** HTML or scripts in an API response are shown as text everywhere, including the report.
 - **Sign-in tokens** are kept in `.jodrell/history.db`, so the GUI and your agent share one sign-in. Passwords and client secrets aren't stored: they're read from `.env` or your environment each time.
 - **Variables are stored as typed,** as in Postman. Keep secrets in environment variables, not in requests, and treat `.jodrell/` like a local `.env` file.

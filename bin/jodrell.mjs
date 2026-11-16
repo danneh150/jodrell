@@ -27,7 +27,7 @@ function parseArgs(argv) {
 
 const args = parseArgs(process.argv.slice(2));
 const cmd = args._[0] || "gui";
-const { findRoot, createCore, ensureGui, runningGui, ensureGitignore, removeOldGitignore, loadConfig, dataDir, describeSpecs, specSources } = await import("../src/project.mjs");
+const { findRoot, createCore, ensureGui, runningGui, ensureGitignore, removeOldGitignore, loadConfig, dataDir, describeSpecs, specSources, writeInProject } = await import("../src/project.mjs");
 const root = findRoot();
 
 const AGENT_RULES = `
@@ -82,6 +82,8 @@ const guiUrl = async () => (await runningGui(root, args.db ? path.resolve(args.d
 /* ---------------- init ---------------- */
 async function init() {
   const changes = [];
+  // Never writes through a symlink or outside the project: see writeInProject.
+  const put = (file, data) => { try { writeInProject(root, file, data); return true; } catch (e) { console.log(yellow(`  Skipped ${path.relative(root, file)}: ${e.message}`)); return false; } };
   const mergeJson = (file, key, entry) => {
     let cur = {};
     if (fs.existsSync(file)) { try { cur = JSON.parse(fs.readFileSync(file, "utf8")); } catch { console.log(yellow(`  Skipped ${path.relative(root, file)}: it isn't valid JSON`)); return; } }
@@ -90,7 +92,7 @@ async function init() {
     const existed = fs.existsSync(file);
     cur[key].jodrell = entry;
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(cur, null, 2) + "\n");
+    put(file, JSON.stringify(cur, null, 2) + "\n");
     changes.push(`${existed ? "Updated" : "Created"} ${path.relative(root, file)}`);
   };
   const stdio = { command: "npx", args: ["jodrell", "mcp"] };
@@ -105,14 +107,16 @@ async function init() {
         // only our own old entries ("npx apiscope mcp" / "npx capcom mcp"), never another tool's
         if (e && (e.args || []).join(" ") === `${old} mcp`) { delete cur[key][old]; touched = true; changes.push(`Removed the old "${old}" entry from ${file}`); }
       }
-      if (touched) fs.writeFileSync(f, JSON.stringify(cur, null, 2) + "\n");
+      if (touched) put(f, JSON.stringify(cur, null, 2) + "\n");
     } catch {}
   }
   mergeJson(path.join(root, ".mcp.json"), "mcpServers", { type: "stdio", ...stdio }); // Claude Code (project scope)
   if (fs.existsSync(path.join(root, ".cursor"))) mergeJson(path.join(root, ".cursor", "mcp.json"), "mcpServers", stdio);
   if (fs.existsSync(path.join(root, ".vscode"))) mergeJson(path.join(root, ".vscode", "mcp.json"), "servers", { type: "stdio", ...stdio });
-  if (removeOldGitignore(root)) changes.push("Removed the old .capcom/ line from .gitignore");
-  if (ensureGitignore(root)) changes.push("Added .jodrell/ to .gitignore");
+  try {
+    if (removeOldGitignore(root)) changes.push("Removed the old .capcom/ line from .gitignore");
+    if (ensureGitignore(root)) changes.push("Added .jodrell/ to .gitignore");
+  } catch (e) { console.log(yellow(`  Skipped .gitignore: ${e.message}`)); }
 
   // Layer 1: tell the agent to use jodrell for HTTP requests.
   if (!args["no-rules"]) {
@@ -123,7 +127,7 @@ async function init() {
       const cur = fs.existsSync(f) ? fs.readFileSync(f, "utf8") : "";
       const marked = /<!-- (?:jodrell|capcom):start -->[\s\S]*?<!-- (?:jodrell|capcom):end -->/; // ours, under either name
       const next = marked.test(cur) ? cur.replace(marked, block) : (cur ? cur.replace(/\s*$/, "\n\n") : "") + wrap(block) + "\n";
-      if (next !== cur) { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, next); changes.push(`${cur ? "Updated" : "Created"} ${file} (use jodrell for API requests)`); }
+      if (next !== cur && put(f, next)) { changes.push(`${cur ? "Updated" : "Created"} ${file} (use jodrell for API requests)`); }
     };
     upsert("CLAUDE.md", { create: true });
     upsert("AGENTS.md");
@@ -155,7 +159,7 @@ async function init() {
       }
       if (JSON.stringify(cur) !== before) {
         fs.mkdirSync(path.dirname(f), { recursive: true });
-        fs.writeFileSync(f, JSON.stringify(cur, null, 2) + "\n");
+        put(f, JSON.stringify(cur, null, 2) + "\n");
         changes.push(`Updated .claude/settings.json (jodrell's tools pre-approved${args["no-guard"] ? "" : "; direct curl/wget/fetch API calls are redirected to jodrell"})`);
       }
     }
@@ -163,7 +167,7 @@ async function init() {
 
   const cfg = loadConfig(root);
   if (args["app-url"] && !cfg._from) {
-    fs.writeFileSync(path.join(root, "jodrell.config.json"), JSON.stringify({ appUrl: args["app-url"] }, null, 2) + "\n");
+    put(path.join(root, "jodrell.config.json"), JSON.stringify({ appUrl: args["app-url"] }, null, 2) + "\n");
     changes.push(`Created jodrell.config.json (appUrl: ${args["app-url"]})`);
   }
   const { SpecIndex } = await import("../src/spec.mjs");

@@ -8,7 +8,9 @@ import path from "node:path";
 
 // Commands that make HTTP requests, when used as a command (not inside a URL).
 const CLIENTS = "curl|wget|http|https|xh|xhs|httpie|Invoke-WebRequest|Invoke-RestMethod|iwr|irm";
-const CMD_START = String.raw`(?:^|[;&|(\x60\n]|\$\(|&&|\|\|)\s*(?:sudo\s+|command\s+|time\s+|env\s+(?:-\S+\s+)*(?:\w+=\S*\s+)*|(?:\w+=\S*\s+)+)*`;
+// Each prefix (sudo, env, A=b...) is one repetition, with no nested repeats,
+// so a long run of A=b assignments can't make the match take exponential time.
+const CMD_START = String.raw`(?:^|[;&|(\x60\n]|\$\(|&&|\|\|)\s*(?:sudo\s+|command\s+|time\s+|env\s+|-[^\s=]+\s+|\w+=[^\s]*\s+)*`;
 const CLIENT_RE = new RegExp(`${CMD_START}(${CLIENTS})(?=\\s|$)`, "i");
 const INLINE_RE = [
   /\b(?:node|deno|bun|tsx)\s+(?:-e|--eval|-p|--print)\b[\s\S]*\b(?:fetch|axios|got|http\.request|https\.request)\s*\(/,

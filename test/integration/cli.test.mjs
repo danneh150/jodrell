@@ -100,3 +100,16 @@ describe("other commands", () => {
     assert.equal(read(root, ".jodrell/marker.txt"), "kept");
   });
 });
+
+test("init won't write through a symbolic link", async () => {
+  const fsx = await import("node:fs"); const px = await import("node:path"); const os = await import("node:os");
+  const { execFileSync } = await import("node:child_process");
+  const { BIN, tmpProject } = await import("../helpers.mjs");
+  const outside = px.join(fsx.mkdtempSync(px.join(os.tmpdir(), "jodrell-victim-")), "victim.md");
+  fsx.writeFileSync(outside, "untouched\n");
+  const root = tmpProject();
+  fsx.symlinkSync(outside, px.join(root, "CLAUDE.md"));
+  const out = execFileSync(process.execPath, [BIN, "init"], { cwd: root }).toString();
+  assert.equal(fsx.readFileSync(outside, "utf8"), "untouched\n");
+  assert.match(out, /Skipped CLAUDE\.md: CLAUDE\.md is a symbolic link/);
+});
