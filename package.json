@@ -1,6 +1,6 @@
 {
   "name": "jodrell",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "The AI-first API client: an alternative to Postman and Bruno, built for working through your AI coding agent. Every request it makes, in its replies, a GUI or a timeline.",
   "keywords": [
     "mcp",

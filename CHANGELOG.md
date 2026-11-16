@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.0
+
+- **Signs in for you.** Describe how to sign in to each API once, in `"auth"` in `jodrell.config.json`, and jodrell signs in when a request needs it, adds the token, and signs in again when it expires or the API returns 401. It supports:
+  - a login request, from your spec or a URL
+  - OAuth 2 client credentials
+  - a command that prints a token
+  - a fixed token or API key
+  
+  Secrets come from `.env` or your environment, as `{{env.NAME}}`. Where the token goes is read from the spec's `securitySchemes`.
+- **See sign-in at a glance in the GUI:** a Sign-in section shows each API as signed in, expiring, expired or needing you (with the reason). Open one to sign in again, open its sign-in request to try it by hand, see the last sign-in, or sign out. The status bar and the request builder show it too.
+- **For your agent:** `auth_status` and `sign_in` tools, and `auth: false` on `send_request` and `call_operation`.
+- **Sign-in calls are masked:** passwords, client secrets and tokens in their bodies aren't stored.
+- **`{{env.NAME}}`** works everywhere `{{variables}}` do.
+- **Fixed:** replay could pick up saved auth headers from another project open in the same process.
+- **README:** where jodrell came from, a guide to getting a good spec, and a new Signing in section.
+
 ## 0.6.0
 
 - **Renamed to jodrell,** after the Jodrell Bank observatory. Another open-source tool for AI coding agents is also called capcom, uses the same `.capcom/` folder and the same commands, and "Capcom" is a registered trademark of the games company.
