@@ -116,6 +116,7 @@ export class Runner {
   // signs in for (set by jodrell's own sign-in).
   async send(args) {
     let { op, method, url, headers = {}, body, session, note, source = "agent", runId, capture, replayOf, itemId, itemName, expectStatus, auth: useAuth = true, authLogin, authRetry } = args;
+    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(String(method || ""))) throw new Error(`"${String(method).slice(0, 40)}" isn't a valid HTTP method.`);
     const sess = session ? this.store.getSession(session) : null;
     const vars = { ...this.envVars(), ...(sess?.vars || {}) };
     url = fill(url, vars);

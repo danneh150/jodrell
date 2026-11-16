@@ -17,3 +17,10 @@ test("detail shows headers, the pretty body and schema problems", () => {
 test("sizes are human-readable", () => {
   assert.deepEqual([size(10), size(2048), size(3 * 1024 * 1024), size(null)], ["10 B", "2.0 kB", "3.0 MB", ""]);
 });
+
+test("control characters from untrusted data can't drive the terminal", async () => {
+  const { line, detail, safe } = await import("../../src/term.mjs");
+  assert.equal(safe("a\x1b]0;x\x07b\nc\td"), "a\\x1b]0;x\\x07b\nc\td", "newlines and tabs stay");
+  const call = { id: 1, ts: new Date().toISOString(), method: "GET", url: "http://h/p\x1b[2J", op_id: "op\x1b]0;T\x07", status: 200, duration_ms: 1, res_size: 1, req_headers: { "x\x1b": "v\x1b" }, res_headers: {}, res_body: "plain \x1b[31mred", source: "agent" };
+  for (const out of [line(call), detail(call)]) assert.ok(!out.replace(/\x1b\[[0-9;]*m/g, "").includes("\x1b"), "only jodrell's own colour codes remain");
+});

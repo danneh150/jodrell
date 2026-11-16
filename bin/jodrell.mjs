@@ -3,7 +3,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { spawn } from "node:child_process";
-import { line, detail, dim, bold, red, green, yellow } from "../src/term.mjs";
+import { line, detail, dim, bold, red, green, yellow, safe } from "../src/term.mjs";
 
 const [major, minor] = process.versions.node.split(".").map(Number);
 if (major < 22 || (major === 22 && minor < 13)) {
@@ -270,10 +270,10 @@ async function importCmd() {
       if (!r.ok) throw new Error(summary.error);
     } else summary = (await core()).collections.importPostman(text);
   } catch (e) { console.error(red(e.message)); process.exit(1); }
-  if (summary.kind === "environment") return console.log(green(`Imported environment "${summary.environment}" (${summary.variables} variables)`));
-  console.log(green(`Imported "${summary.collection}": ${summary.requests} requests in ${summary.folders} folders`));
+  if (summary.kind === "environment") return console.log(green(`Imported environment "${safe(summary.environment)}" (${summary.variables} variables)`));
+  console.log(green(`Imported "${safe(summary.collection)}": ${summary.requests} requests in ${summary.folders} folders`));
   if (summary.capturesFromScripts) console.log(dim(`  ${summary.capturesFromScripts} script line(s) converted into captures or status checks`));
-  for (const n of summary.notes) console.log(yellow("  " + n));
+  for (const n of summary.notes) console.log(yellow("  " + safe(n)));
 }
 
 /* ---------------- watch / show / open ---------------- */
@@ -294,7 +294,7 @@ async function watch() {
           if (ev === "call" && data) {
             const c = JSON.parse(data);
             if (args.detail) console.log(detail(await (await fetch(`${base}/api/calls/${c.id}`)).json())); else console.log(line(c));
-          } else if (ev === "run" && data) console.log(bold(`\n── ${JSON.parse(data).name} ──`));
+          } else if (ev === "run" && data) console.log(bold(`\n── ${safe(JSON.parse(data).name)} ──`));
         }
       }
       throw new Error("connection closed");

@@ -32,6 +32,11 @@ describe("sending", () => {
     c = await runner.send({ method: "GET", url: `${api.url}/binary` }); assert.match(c.res_body, /^\[5 bytes of application\/octet-stream\]$/);
     c = await runner.send({ method: "GET", url: `${api.url}/big?kb=1100` }); assert.equal(c.truncated, true); assert.equal(c.res_body.length, 1_000_000);
   });
+  test("refuses a method that isn't an HTTP token, before anything is stored", async () => {
+    const { runner, store } = await makeCore();
+    await assert.rejects(runner.send({ method: "GET;echo hi;", url: `${api.url}/echo` }), /isn't a valid HTTP method/);
+    assert.equal(store.listCalls({}).length, 0);
+  });
   test("explains failures in plain words", async () => {
     const { runner } = await makeCore();
     const port = await closedPort();

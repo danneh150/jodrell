@@ -1720,9 +1720,11 @@ function diff(a, b) {
   while (i < n) out.push(["d", a[i++]]); while (j < m) out.push(["a", b[j++]]);
   return out;
 }
+// Single quotes, so nothing in a URL, header or body ($(...), backticks, ;) runs when the command is pasted into a shell.
+const shq = (s) => "'" + String(s ?? "").replace(/'/g, "'\\''") + "'";
 function curl(c) {
-  const hd = Object.entries(c.req_headers || {}).map(([k, v]) => ` \\\n  -H ${JSON.stringify(`${k}: ${v}`)}`).join("");
-  return `curl -X ${c.method} ${JSON.stringify(c.url)}${hd}${c.req_body ? ` \\\n  --data ${JSON.stringify(c.req_body)}` : ""}`;
+  const hd = Object.entries(c.req_headers || {}).map(([k, v]) => ` \\\n  -H ${shq(`${k}: ${v}`)}`).join("");
+  return `curl -X ${shq(c.method)} ${shq(c.url)}${hd}${c.req_body ? ` \\\n  --data-raw ${shq(c.req_body)}` : ""}`;
 }
 
 /* ---- curl import ---- */

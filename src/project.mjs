@@ -9,6 +9,7 @@ import { Store } from "./store.mjs";
 import { Collections } from "./collections.mjs";
 import { Runner } from "./runner.mjs";
 import { Auth } from "./auth.mjs";
+import { safe } from "./term.mjs";
 
 export function findRoot(start = process.cwd()) {
   let dir = path.resolve(start);
@@ -157,6 +158,7 @@ export function describeSpecs(specs, root) {
   const out = specs.specs.map((s) => s.error
     ? `✗ ${rel(s.source)}: couldn't load (${s.error})`
     : `● ${s.title}${s.version ? " " + s.version : ""}: ${s.operations} operations, ${s.baseUrl || "no base URL"} (${s.origin === "app" ? "served by your app at " : s.origin === "discovered" ? "found at " : ""}${rel(s.source)})${s.warnings.length ? "\n    ⚠ " + s.warnings.join("\n    ⚠ ") : ""}`);
+  for (let i = 0; i < out.length; i++) out[i] = out[i].split("\n").map(safe).join("\n"); // titles and errors come from spec files
   if (specs.duplicates?.length) out.push(`(${specs.duplicates.length} older cop${specs.duplicates.length === 1 ? "y" : "ies"} of the same spec ignored: ${specs.duplicates.map((d) => rel(d.path)).join(", ")})`);
   return out;
 }
