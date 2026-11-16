@@ -103,3 +103,25 @@ export function validateResponse(op, status, contentType, body) {
 }
 
 export function clearValidationCache() { cache.clear(); }
+
+// Sign-in requests and responses carry passwords, client secrets and tokens in
+// their bodies. Mask those fields (JSON or form-encoded) before they're stored.
+const SECRET_FIELD = /pass(word)?|secret|token|api[-_]?key|credential|^code$|assertion/i;
+export function redactBody(text) {
+  if (typeof text !== "string" || !text) return text;
+  try {
+    const walk = (v, k) => {
+      if (k && SECRET_FIELD.test(k) && v !== null && typeof v !== "object") return mask(v);
+      if (Array.isArray(v)) return v.map((x) => walk(x));
+      if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([kk, vv]) => [kk, walk(vv, kk)]));
+      return v;
+    };
+    return JSON.stringify(walk(JSON.parse(text)));
+  } catch {}
+  if (/^[^\s=&]+=[^\s&]*(&[^\s=&]+=[^\s&]*)*$/.test(text.trim())) {
+    const p = new URLSearchParams(text.trim());
+    for (const [k, v] of [...p.entries()]) if (SECRET_FIELD.test(k)) p.set(k, mask(v));
+    return p.toString().replace(/%E2%80%A2/g, "•");
+  }
+  return text;
+}

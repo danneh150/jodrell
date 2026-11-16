@@ -1,0 +1,198 @@
+// Auth profiles: signing in automatically, refreshing, and showing the state.
+import { test, describe, before, after } from "node:test";
+import assert from "node:assert/strict";
+import { fakeApi, makeCore, oas, startGui } from "../helpers.mjs";
+import { readDotEnv } from "../../src/auth.mjs";
+import { redactBody } from "../../src/checks.mjs";
+
+let api;
+before(async () => { api = await fakeApi(); });
+after(async () => { await api.close(); });
+
+const ok = { 200: { description: "ok" } };
+const shopSpec = (extra = {}) => oas("Shop", {
+  "/login": { post: { operationId: "login", security: [], responses: ok } },
+  "/me": { get: { operationId: "me", responses: ok } },
+  "/echo": { get: { operationId: "publicEcho", security: [], responses: ok } },
+  "/echo/private": { get: { operationId: "privateEcho", responses: ok } },
+}, { servers: [{ url: api.url }], components: { securitySchemes: { bearer: { type: "http", scheme: "bearer" } } }, security: [{ bearer: [] }], ...extra });
+
+// A project with the shop spec and the given auth profiles.
+const project = (auth, files = {}) => makeCore({
+  "openapi.json": shopSpec(),
+  "jodrell.config.json": { specs: ["openapi.json"], auth },
+  ...files,
+});
+const loginProfile = { shop: { login: { op: "login", body: { password: "{{env.SHOP_PASS}}" } } } };
+const logins = () => api.requests.filter((r) => r.path === "/login").length;
+
+describe("signing in automatically", () => {
+  test("signs in on the first request, then reuses the token", async () => {
+    const { runner, store, auth } = await project(loginProfile, { ".env": "SHOP_PASS=secret\n" });
+    const before = logins();
+    const op = runner.fromOperation("me");
+    const c = await runner.send({ ...op });
+    assert.equal(c.status, 200);
+    assert.equal(logins() - before, 1);
+    assert.match(c.auth.note, /signed in for "shop"/);
+    const again = await runner.send({ ...runner.fromOperation("me") });
+    assert.equal(again.status, 200);
+    assert.equal(logins() - before, 1, "no second sign-in while the token is valid");
+    assert.equal(auth.status("shop").state, "valid");
+    assert.ok(auth.status("shop").expiresAt, "expires_in is read from the response");
+
+    // The sign-in call is in the history, with the password and token masked.
+    const login = store.getCall(auth.status("shop").loginCallId);
+    assert.match(login.note, /signed in for "shop"/);
+    assert.ok(!login.req_body.includes("secret"), "the password isn't stored");
+    assert.ok(!login.res_body.includes(api.token), "the token isn't stored");
+    assert.ok(!JSON.stringify(store.getCall(c.id)).includes(api.token));
+  });
+
+  test("signs in again when the token has expired", async () => {
+    const { runner, store, auth } = await project(loginProfile, { ".env": "SHOP_PASS=secret" });
+    await runner.send({ ...runner.fromOperation("me") });
+    store.saveAuthState({ ...store.getAuthState("shop"), expiresAt: new Date(Date.now() - 1000).toISOString() });
+    assert.equal(auth.status("shop").state, "expired");
+    const before = logins();
+    const c = await runner.send({ ...runner.fromOperation("me") });
+    assert.equal(c.status, 200);
+    assert.equal(logins() - before, 1);
+  });
+
+  test("on a 401, signs in again and sends the request once more", async () => {
+    const { runner, auth } = await project(loginProfile, { ".env": "SHOP_PASS=secret" });
+    await runner.send({ ...runner.fromOperation("me") });
+    api.rotate(); // the API forgets the old token
+    const c = await runner.send({ ...runner.fromOperation("me") });
+    assert.equal(c.status, 200);
+    assert.ok(c.retriedFrom, "points back to the rejected call");
+    assert.match(c.note, /sent again after jodrell signed in/);
+    assert.equal(auth.status("shop").state, "valid");
+  });
+
+  test("explains what's wrong instead of sending, and the GUI state says so", async () => {
+    const { runner, auth } = await project(loginProfile);
+    delete process.env.SHOP_PASS;
+    let c = await runner.send({ ...runner.fromOperation("me") });
+    assert.match(c.error, /^Not sent: couldn't sign in for "shop"\. SHOP_PASS isn't set\. Add it to \.env/);
+    assert.equal(auth.status("shop").state, "failed");
+    assert.equal(auth.status("shop").needsAction, true);
+
+    const bad = await project(loginProfile, { ".env": "SHOP_PASS=wrong" });
+    c = await bad.runner.send({ ...bad.runner.fromOperation("me") });
+    assert.match(c.error, /Signing in failed: HTTP 401 \(Wrong password\)/);
+  });
+
+  test("leaves explicit auth, auth: false and public operations alone", async () => {
+    const { runner } = await project(loginProfile, { ".env": "SHOP_PASS=secret" });
+    const echo = (c) => JSON.parse(c.res_body);
+    let c = await runner.send({ method: "GET", url: `${api.url}/echo/private`, headers: { Authorization: "Bearer mine" } });
+    assert.equal(echo(c).headers.authorization, "Bearer mine");
+    c = await runner.send({ method: "GET", url: `${api.url}/echo/private`, auth: false });
+    assert.equal(echo(c).headers.authorization, undefined);
+    c = await runner.send({ ...runner.fromOperation("publicEcho") });
+    assert.equal(echo(c).headers.authorization, undefined, "security: [] means no auth");
+    c = await runner.send({ method: "GET", url: `${api.url}/echo/private` });
+    assert.equal(echo(c).headers.authorization, `Bearer ${api.token}`, "raw URLs under the spec's base URL get the token too");
+    c = await runner.send({ method: "GET", url: "http://localhost:1/elsewhere", auth: true }).catch((e) => e);
+    assert.ok(!JSON.stringify(c).includes(api.token), "other hosts never get it");
+  });
+
+  test("signing in by hand (the GUI's login request) updates the token", async () => {
+    const { runner, auth } = await project(loginProfile, { ".env": "SHOP_PASS=secret" });
+    const draft = auth.loginDraft("shop");
+    assert.equal(draft.method, "POST");
+    assert.match(draft.body.raw, /\{\{env\.SHOP_PASS\}\}/, "secrets stay as variables in the draft");
+    const c = await runner.sendRequest(draft, {});
+    assert.equal(c.status, 200);
+    assert.equal(c.auth.ok, true);
+    assert.equal(auth.status("shop").state, "valid");
+  });
+
+  test("replay uses the current token, not the one in the original request", async () => {
+    const { runner } = await project(loginProfile, { ".env": "SHOP_PASS=secret" });
+    const first = await runner.send({ ...runner.fromOperation("me") });
+    api.rotate();
+    const r = await runner.replay(first.id);
+    assert.equal(r.status, 200);
+  });
+});
+
+describe("other ways to sign in", () => {
+  test("OAuth 2 client credentials, with the token URL from the spec", async () => {
+    const spec = shopSpec({ components: { securitySchemes: { oauth: { type: "oauth2", flows: { clientCredentials: { tokenUrl: `${api.url}/oauth/token`, scopes: {} } } } } } });
+    const { runner, auth } = await makeCore({ "openapi.json": spec, "jodrell.config.json": { specs: ["openapi.json"], auth: { shop: { clientCredentials: { clientId: "{{env.CID}}", clientSecret: "{{env.CSECRET}}" } } } }, ".env": "CID=cid\nCSECRET=csecret" });
+    const c = await runner.send({ ...runner.fromOperation("me") });
+    assert.equal(c.status, 200);
+    assert.equal(auth.status("shop").how, "OAuth 2 client credentials");
+  });
+
+  test("an API key in the query string, as the spec says, masked in the history", async () => {
+    const spec = oas("Keyed", { "/keyed": { get: { operationId: "keyed", responses: ok } } }, { servers: [{ url: api.url }], components: { securitySchemes: { k: { type: "apiKey", in: "query", name: "key" } } } });
+    const { runner, store } = await makeCore({ "openapi.json": spec, "jodrell.config.json": { specs: ["openapi.json"], auth: { keyed: { command: `echo ${api.token}` } } } });
+    const c = await runner.send({ ...runner.fromOperation("keyed") });
+    assert.equal(c.status, 200);
+    assert.ok(!store.getCall(c.id).url.includes(api.token));
+    assert.match(store.getCall(c.id).url, /key=.*%E2%80%A2|key=.*••••/);
+  });
+
+  test("session cookies from a sign-in response", async () => {
+    const { runner, auth } = await project({ shop: { login: { url: "/cookie-login" } } });
+    const c = await runner.send({ ...runner.fromOperation("me") });
+    assert.equal(c.status, 200);
+    assert.equal(auth.status("shop").placement, "cookies from the sign-in response");
+  });
+
+  test("a fixed token from the environment", async () => {
+    const { runner } = await project({ shop: { value: "{{env.SHOP_TOKEN}}" } }, { ".env": `SHOP_TOKEN=${api.token}` });
+    assert.equal((await runner.send({ ...runner.fromOperation("me") })).status, 200);
+  });
+
+  test("profiles that can't work say why", async () => {
+    const { auth } = await makeCore({ "a.json": shopSpec(), "b.json": oas("Other", {}, { servers: [{ url: "http://other.test" }] }), "jodrell.config.json": { specs: ["a.json", "b.json"], auth: { x: { value: "t" }, y: { login: { op: "nope" } } } } });
+    assert.equal(auth.status("x").state, "misconfigured");
+    assert.match(auth.status("x").message, /add "spec"/);
+    assert.match(auth.status("y").message, /"nope" isn't in any spec/);
+  });
+
+  test("a missing secret shows as needing you before any request is sent", async () => {
+    const { auth } = await project({ shop: { value: "{{env.JODRELL_TEST_UNSET}}" } });
+    const st = auth.status("shop");
+    assert.equal(st.state, "failed"); assert.equal(st.needsAction, true);
+    assert.match(st.message, /^JODRELL_TEST_UNSET isn't set/);
+  });
+});
+
+describe("in the GUI", () => {
+  test("lists profiles, signs in on request, signs out and gives the login request", async () => {
+    const core = await project(loginProfile, { ".env": "SHOP_PASS=secret" });
+    const gui = await startGui(core);
+    try {
+      const j = (p, o = {}) => fetch(gui.url + p, { ...o, headers: { "content-type": "application/json" } }).then((r) => r.json());
+      let list = await j("/api/auth");
+      assert.equal(list[0].name, "shop"); assert.equal(list[0].state, "none");
+      assert.equal(list[0].login.opId, "login");
+      const r = await j("/api/auth/shop/signin", { method: "POST" });
+      assert.equal(r.ok, true); assert.equal(r.state, "valid");
+      assert.ok(!JSON.stringify(r).includes(api.token), "the token is masked");
+      assert.equal((await j("/api/auth/shop/request")).method, "POST");
+      await j("/api/auth/shop", { method: "DELETE" });
+      list = await j("/api/auth");
+      assert.equal(list[0].state, "none");
+    } finally { await gui.close(); }
+  });
+});
+
+describe("helpers", () => {
+  test(".env files", async () => {
+    const { root } = await makeCore({ ".env": `A=1\nexport B="two words"\nC='x#y'\nD=3 # comment\n# E=no\n` });
+    assert.deepEqual(readDotEnv(root), { A: "1", B: "two words", C: "x#y", D: "3" });
+  });
+  test("sign-in bodies are masked", () => {
+    assert.equal(JSON.parse(redactBody('{"username":"ada","password":"hunter2hunter2"}')).username, "ada");
+    assert.ok(!redactBody('{"password":"hunter2hunter2"}').includes("hunter2hunter2"));
+    assert.ok(!redactBody("grant_type=client_credentials&client_secret=abcdefghijk").includes("abcdefghijk"));
+    assert.equal(redactBody("not a form"), "not a form");
+  });
+});

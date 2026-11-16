@@ -8,6 +8,7 @@ import { clearValidationCache } from "./checks.mjs";
 import { Store } from "./store.mjs";
 import { Collections } from "./collections.mjs";
 import { Runner } from "./runner.mjs";
+import { Auth } from "./auth.mjs";
 
 export function findRoot(start = process.cwd()) {
   let dir = path.resolve(start);
@@ -25,6 +26,7 @@ export function findRoot(start = process.cwd()) {
 //   "specs": ["openapi.yaml", { "path": "services/billing/openapi.json", "baseUrl": "http://localhost:4000" }],
 //   "discover": true,                       // also search the project for specs (default: true unless "specs" is set)
 //   "baseUrl": "http://localhost:3000",     // fallback base URL (same as appUrl if that's set)
+//   "auth": { "shop": { "login": { "op": "login", "body": { ... } } } },  // sign-in per API: see auth.mjs
 //   "port": 4545
 // }
 export function loadConfig(root) {
@@ -100,8 +102,10 @@ export async function createCore({ root = findRoot(), specs: specArgs = [], base
   specs.duplicates = duplicates;
   const store = new Store(path.resolve(db || path.join(dataDir(root), "history.db")));
   const collections = new Collections(store);
-  const runner = new Runner({ store, specs, collections });
-  const core = { root, config, specs, store, collections, runner, project: path.basename(root), specArgs };
+  const core = { root, config, specs, store, collections, project: path.basename(root), specArgs };
+  // Auth reads the config fresh, so edits to "auth" apply without a restart.
+  core.auth = new Auth({ store, specs, root, config: () => { try { return loadConfig(root); } catch { return core.config; } } });
+  core.runner = new Runner({ store, specs, collections, auth: core.auth });
 
   // Re-find specs now (e.g. the agent asks), reloading only if something changed.
   core.refreshSpecs = async ({ force = false } = {}) => {

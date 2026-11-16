@@ -216,6 +216,14 @@ def main():
         pg.route("**/*", lambda r: r.abort() if not r.request.url.startswith(("file:", "data:")) else r.continue_())
         pg.goto("file://" + os.path.join(root, "report.html")); pg.wait_for_timeout(800)
         pg.locator(".av-row:has-text('payment_intents')").first.click(); shot(pg, "report.png")
+
+        # Sign-in: added last, so the agent's earlier story (a 401, then logging in) is unchanged.
+        # Auth profiles are read fresh from the config, so no restart is needed.
+        json.dump({"auth": {"shop": {"login": {"op": "login", "body": {"email": "dev@example.com", "password": "{{env.SHOP_PASS}}"}}},
+                            "partner": {"value": "{{env.PARTNER_KEY}}", "hosts": ["api.partner.example"]}}}, open(os.path.join(root, "jodrell.config.json"), "w"), indent=2)
+        open(os.path.join(root, ".env"), "w").write("SHOP_PASS=secret\n")
+        api(gui, "/api/auth/shop/signin", "POST")
+        pg = page(); tree(pg, "partner"); shot(pg, "sign-in.png")
         b.close()
 
     for f in os.listdir(OUT):  # strip alpha and compress

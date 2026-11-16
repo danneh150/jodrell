@@ -33,6 +33,9 @@ function summarise(call, uiBase) {
   const v = call.validation;
   if (v?.checked) lines.push(v.valid ? "Response matches the spec." : `Response does NOT match the spec:\n${v.errors.map((e) => `  ${e.path} ${e.message}`).join("\n")}`);
   else if (v?.note) lines.push(`Schema: ${v.note}`);
+  if (call.retriedFrom) lines.push(`The first try (call #${call.retriedFrom}) got HTTP 401, so jodrell signed in again and sent it once more.`);
+  if (call.auth?.note) lines.push(`Before sending this, ${call.auth.note}.`);
+  if (call.auth && "ok" in call.auth) lines.push(call.auth.ok ? `Signed in for "${call.auth.profile}": jodrell will add this token to "${call.auth.profile}" requests.` : `Sign-in for "${call.auth.profile}" didn't work: ${call.auth.error}`);
   if (call.captured) lines.push(`Saved to session: ${Object.entries(call.captured).map(([k, v]) => `${k} = ${v}`).join(", ")}`);
   const interesting = Object.entries(call.res_headers || {}).filter(([k]) => /^(location|content-type|retry-after|x-request-id|etag|www-authenticate|set-cookie)$/i.test(k));
   if (interesting.length) lines.push("Headers: " + interesting.map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(" | ") : v}`).join("; "));
@@ -60,12 +63,12 @@ function tree(items, depth = 0) {
     : `${"  ".repeat(depth)}#${it.id} ${it.request?.method || "GET"} ${it.name}`).join("\n");
 }
 
-function buildServer({ store, specs, runner, collections, uiBase: base, ctx, gui, root, project, refreshSpecs }) {
+function buildServer({ store, specs, runner, collections, auth, uiBase: base, ctx, gui, root, project, refreshSpecs }) {
   const uiBase = typeof base === "function" ? base() : base;
   const guiUrl = () => (typeof base === "function" ? base() : base) || "";
   const server = new McpServer(
     { name: "jodrell", version: "0.3.0" },
-    { instructions: "jodrell is the user's API client. Every call you make is recorded and shown to them live. To call the project's own APIs, use call_operation (from the OpenAPI specs). For third-party APIs and imported Postman collections, use list_collections and run_request / run_collection, or send_request for one-off calls. {{variables}} come from the active environment and collection variables. Use sessions for cookies and captured auth headers." },
+    { instructions: "jodrell is the user's API client. Every call you make is recorded and shown to them live. To call the project's own APIs, use call_operation (from the OpenAPI specs). For third-party APIs and imported Postman collections, use list_collections and run_request / run_collection, or send_request for one-off calls. {{variables}} come from the active environment and collection variables. Auth profiles in jodrell.config.json sign in automatically: don't call login endpoints yourself when auth_status lists a profile for that API. Use sessions for cookies and captured auth headers otherwise." },
   );
 
   // ---- MCP Apps: the same tools also return a view the host can render in the reply.
@@ -87,6 +90,7 @@ function buildServer({ store, specs, runner, collections, uiBase: base, ctx, gui
   };
 
   const sessionArg = z.string().optional().describe("Named session to use (headers, cookies and variables are applied and updated)");
+  const authArg = z.boolean().optional().describe("Set false to send without the auth profile's token (e.g. to test what happens when signed out). Default: true.");
   const captureArg = z.record(z.string(), z.string()).optional().describe('Save values from the response into the session, e.g. {"header:Authorization": "Bearer {{body.access_token}}", "var:orderId": "{{body.id}}"}. Requires session.');
 
   server.registerTool("list_operations", {
@@ -145,11 +149,12 @@ function buildServer({ store, specs, runner, collections, uiBase: base, ctx, gui
       session: sessionArg,
       capture: captureArg,
       note: z.string().optional().describe("Short note shown in the history, e.g. why you made this call"),
+      auth: authArg,
     },
-  }, async ({ operationId, pathParams, query, headers, body, session, capture, note }) => {
+  }, async ({ operationId, pathParams, query, headers, body, session, capture, note, auth: useAuth }) => {
     try {
       const req = runner.fromOperation(operationId, { pathParams, query, headers, body }, session);
-      const call = await runner.send({ ...req, session, capture, note, runId: runId() });
+      const call = await runner.send({ ...req, session, capture, note, runId: runId(), auth: useAuth });
       return callResult(call);
     } catch (e) { return fail(e.message); }
   });
@@ -164,15 +169,42 @@ function buildServer({ store, specs, runner, collections, uiBase: base, ctx, gui
       session: sessionArg,
       capture: captureArg,
       note: z.string().optional(),
+      auth: authArg,
     },
-  }, async ({ method, url, headers, body, session, capture, note }) => {
+  }, async ({ method, url, headers, body, session, capture, note, auth: useAuth }) => {
     try {
       const base = specs.list()[0]?.baseUrl;
       const full = /^https?:\/\//.test(url) ? url : base ? base.replace(/\/$/, "") + "/" + url.replace(/^\//, "") : null;
       if (!full) return fail("Relative URL given but no base URL is known. Pass a full URL.");
-      const call = await runner.send({ method: method.toUpperCase(), url: full, headers, body, session, capture, note, runId: runId() });
+      const call = await runner.send({ method: method.toUpperCase(), url: full, headers, body, session, capture, note, runId: runId(), auth: useAuth });
       return callResult(call);
     } catch (e) { return fail(e.message); }
+  });
+
+  server.registerTool("auth_status", {
+    description: "List the auth profiles from jodrell.config.json: which API each one signs in to, whether it's signed in, and when the token expires. Requests to those APIs get the token automatically.",
+    inputSchema: {},
+  }, async () => {
+    const list = auth?.statuses() || [];
+    if (!list.length) return text('No auth profiles. To have jodrell sign in for you, add "auth" to jodrell.config.json, e.g. {"auth": {"shop": {"login": {"op": "login", "body": {"username": "{{env.SHOP_USER}}", "password": "{{env.SHOP_PASS}}"}}}}}. Secrets come from .env or the environment.');
+    return text(list.map((a) => [
+      `${a.name} (${a.state}): ${a.message}`,
+      `  Applies to: ${[a.spec && `${a.spec}${a.baseUrl ? ` (${a.baseUrl})` : ""}`, ...a.hosts].filter(Boolean).join(", ") || "nothing yet"}`,
+      `  Signs in with ${a.how}${a.login ? `: ${a.login.method} ${a.login.url}` : a.command ? `: ${a.command}` : ""}. Token goes in the ${a.placement}.`,
+      a.expiresAt ? `  Expires: ${a.expiresAt}` : null,
+    ].filter(Boolean).join("\n")).join("\n"));
+  });
+
+  server.registerTool("sign_in", {
+    description: "Sign in for an auth profile now, even if its token is still valid. Normally not needed: jodrell signs in when a request needs it.",
+    inputSchema: { name: z.string().describe("The auth profile's name, from auth_status") },
+  }, async ({ name }) => {
+    const p = auth?.profile(name);
+    if (!p) return fail(`No auth profile called "${name}". Use auth_status to see them.`);
+    try { await auth.ensure(p, runner, { force: true, source: "agent", runId: runId() }); }
+    catch (e) { return fail(`Couldn't sign in for "${name}": ${e.message}`); }
+    const st = auth.status(name);
+    return text(`Signed in for "${name}". ${st.expiresAt ? `The token expires at ${st.expiresAt}.` : "The API didn't say when the token expires."}`);
   });
 
   server.registerTool("set_session", {

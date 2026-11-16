@@ -355,6 +355,18 @@ dialog::backdrop { background: rgb(0 0 0 / 0.35); }
 .dtitle .grow { flex: 1; }
 .dtitle .chip { background: color-mix(in srgb, var(--warn) 14%, var(--bg)); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
 .dtitle .chip[hidden], .dtitle .btn[hidden] { display: none; }
+/* Sign-in (auth profiles): one colour per state, used in the tree, lists, chips and the detail page */
+.authpill { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.authpill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: 0 0 7px; }
+.a-ok { color: var(--ok); } .a-warn { color: var(--warn); } .a-err { color: var(--err); } .a-idle { color: var(--faint); }
+.dtitle .chip.authchip { cursor: pointer; background: var(--chrome-2); border-color: var(--line); display: inline-flex; align-items: center; gap: 5px; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dtitle .chip.authchip.a-ok { color: var(--ok); } .dtitle .chip.authchip.a-warn { color: var(--warn); } .dtitle .chip.authchip.a-err { color: var(--err); } .dtitle .chip.authchip.a-idle { color: var(--muted); }
+.dtitle .chip.authchip .ic, .dtitle .chip.authchip .ic svg { width: 12px; height: 12px; }
+.authbox { border: 1px solid var(--line); border-left: 4px solid currentColor; background: var(--raised); padding: 10px 12px; margin: 10px 0 12px; border-radius: 2px; }
+.authbox p { margin: 4px 0 0; color: var(--ink); }
+.authbox strong { font-size: 13px; }
+#authStatus button { background: none; border: 0; padding: 0; font: inherit; cursor: pointer; }
+#authStatus[hidden] { display: none; }
 .summary { padding: 18px 20px; overflow: auto; }
 .sum-title { display: flex; align-items: center; gap: 10px; }
 .sum-title .ic, .sum-title .ic svg { width: 32px; height: 32px; flex: 0 0 32px; }
@@ -522,6 +534,7 @@ dialog { border: 2px solid var(--bar-line); }
 <footer class="status">
   <span id="count"></span>
   <span id="envStatus"></span>
+  <span id="authStatus" hidden></span>
   <span class="live" id="live"><i></i><span>Connecting</span></span>
   <span class="grow"></span>
   <label title="Open each new agent request in the Agent tab"><input type="checkbox" id="follow" checked> Follow agent</label>
@@ -590,7 +603,7 @@ const S = {
   info: null, cols: [], ops: [], specs: [], envs: [], sessions: [], calls: [], runs: new Map(), runSummaries: new Map(),
   tabs: [], active: null, side: store.get("side", "collections"), session: store.get("session", "default"),
   follow: store.get("follow", true), theme: store.get("theme", "auto"), index: new Map(), open: new Set(store.get("openNodes", [])),
-  hq: "", hfilter: "all", selectedCall: null,
+  hq: "", hfilter: "all", selectedCall: null, auth: [],
 };
 let tabSeq = 0;
 function blankRequest(over = {}) {
@@ -671,6 +684,114 @@ async function loadSessions() {
   const names = [...new Set(["default", ...S.sessions.map((s) => s.name)])];
   sel.innerHTML = names.map((n) => `<option ${n === S.session ? "selected" : ""}>${esc(n)}</option>`).join("") + `<option value="">None</option>`;
 }
+async function loadAuth() { S.auth = await api("/api/auth").catch(() => []); }
+
+/* ---- sign-in (auth profiles from jodrell.config.json) ---- */
+const untilText = (ts) => { const m = Math.round((new Date(ts) - Date.now()) / 60000); return m < 1 ? "under a minute" : m < 90 ? `${m} min` : m < 2880 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} days`; };
+// A short label and a colour for each state.
+function authLook(a) {
+  if (!a) return { label: "", cls: "a-idle" };
+  switch (a.state) {
+    case "valid": return { label: a.expiresAt ? `Signed in, ${untilText(a.expiresAt)} left` : "Signed in", short: a.expiresAt ? untilText(a.expiresAt) : "Signed in", cls: "a-ok" };
+    case "expiring": return { label: `Expires in ${untilText(a.expiresAt)}`, short: "Expires soon", cls: "a-warn" };
+    case "expired": return { label: "Expired: signs in again on the next request", short: "Expired", cls: "a-warn" };
+    case "rejected": return { label: "Token rejected: signs in again on the next request", short: "Rejected", cls: "a-warn" };
+    case "failed": return { label: "Sign-in failed: needs you", short: "Needs you", cls: "a-err" };
+    case "misconfigured": return { label: "Set-up problem: needs you", short: "Set-up problem", cls: "a-err" };
+    default: return { label: "Not signed in: signs in on the first request", short: "Not signed in", cls: "a-idle" };
+  }
+}
+const authPill = (a, text) => { const l = authLook(a); return h("span", { class: "authpill " + l.cls, title: a?.message || "" }, text ?? l.label); };
+const hostOfUrl = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ""; } };
+const sameEndpoint = (a, b) => { try { const x = new URL(a), y = new URL(b); return x.origin === y.origin && x.pathname.replace(/\/$/, "") === y.pathname.replace(/\/$/, ""); } catch { return false; } };
+// Which profile signs in this request, the same way the server decides.
+function authFor(t) {
+  if (!S.auth.length || t?.kind !== "request") return null;
+  if (t.authName) { const a = S.auth.find((x) => x.name === t.authName); return a ? { a, login: true } : null; }
+  const d = t.draft;
+  let url = resolveStr(d.url, varsFor(t), new Set());
+  for (const p of d.pathVars || []) if (p.key) url = url.replace(new RegExp(`/:${p.key}(?=/|\\?|#|$)`), "/x");
+  if (url && !/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) url = "https://" + url;
+  for (const a of S.auth) if (a.login && a.login.method === d.method && sameEndpoint(a.login.url, url)) return { a, login: true };
+  const op = t.opId ? S.ops.find((o) => o.id === t.opId) : null;
+  if (op && Array.isArray(op.security) && !op.security.length) return null;
+  const host = hostOfUrl(url);
+  const a = S.auth.find((x) => (x.hosts || []).some((hh) => host === hh || host.endsWith("." + hh)) || (x.spec && op?.spec === x.spec) || (x.baseUrl && url.toLowerCase().startsWith(x.baseUrl.toLowerCase())));
+  if (!a) return null;
+  const own = (d.headers || []).some((x) => x.enabled !== false && /^authorization$/i.test(x.key)) || ["bearer", "basic", "apikey"].includes(d.auth?.type);
+  return { a, own };
+}
+function updateAuthChip(t) {
+  const chip = t?._els?.authChip; if (!chip) return;
+  const m = authFor(t);
+  chip.hidden = !m;
+  if (!m) return;
+  const l = authLook(m.a);
+  chip.className = "chip authchip " + (m.own ? "a-idle" : l.cls);
+  const label = m.login ? `Sign-in request for ${m.a.name}` : m.own ? `${m.a.name}: this request's own auth is used` : `${m.a.name}: ${l.short}`;
+  chip.replaceChildren(icon("key"), h("span", {}, label));
+  chip.title = m.login ? `Sending this signs in for "${m.a.name}". If it works, jodrell keeps the token.` : m.own ? `This request sets its own auth, so jodrell doesn't add the "${m.a.name}" token.` : `${m.a.message}\nClick for details.`;
+  chip.onclick = () => openKey(`auth:${m.a.name}`);
+}
+async function signInNow(name) {
+  toast(`Signing in for ${name}…`);
+  try {
+    const r = await api(`/api/auth/${encodeURIComponent(name)}/signin`, { method: "POST" });
+    await loadAuth(); refreshAuthUi();
+    toast(r.ok ? `Signed in for ${name}` : `Couldn't sign in: ${r.error}`);
+  } catch (e) { toast(e.message); }
+}
+async function openSignInRequest(name) {
+  const key = `authreq:${name}`;
+  if (await ensureDoc(key)) go(key); else toast("This profile doesn't sign in with a request");
+}
+function refreshAuthUi() {
+  renderSideSoon(); updateAuthStatus();
+  const t = currentTab();
+  if (t?.kind === "request") updateAuthChip(t);
+  else if (t && (t.authName || t.container === "signin")) renderView();
+  if (S.listCont === "signin") refreshListSoon();
+}
+function updateAuthStatus() {
+  const el = $("#authStatus"); if (!el) return;
+  const bad = S.auth.filter((a) => a.needsAction);
+  el.hidden = !S.auth.length;
+  if (!S.auth.length) return;
+  const ok = S.auth.filter((a) => a.state === "valid" || a.state === "expiring").length;
+  el.replaceChildren(bad.length
+    ? h("button", { class: "a-err", onclick: () => openKey(`auth:${bad[0].name}`), title: bad.map((a) => `${a.name}: ${a.message}`).join("\n") }, h("span", { class: "authpill" }, `Sign-in needs you: ${bad.map((a) => a.name).join(", ")}`))
+    : h("button", { onclick: () => openKey("signin"), title: S.auth.map((a) => `${a.name}: ${authLook(a).label}`).join("\n") }, h("span", { class: "authpill" }, `Signed in: ${ok} of ${S.auth.length}`)));
+}
+// The detail page for one profile.
+function authDetail(name) {
+  const wrap = h("div", { class: "summary" });
+  const a = S.auth.find((x) => x.name === name);
+  if (!a) { wrap.append(h("h2", {}, name), h("p", { class: "muted" }, "This profile is no longer in jodrell.config.json.")); return wrap; }
+  const l = authLook(a);
+  wrap.append(h("div", { class: "sum-title" }, icon("key"), h("h2", {}, a.name)));
+  wrap.append(h("div", { class: "authbox " + l.cls }, h("strong", { class: "authpill " + l.cls }, l.label), h("p", {}, a.message)));
+  const dl = h("dl", { class: "kvl", style: "margin:0 0 12px" });
+  const row = (k, v) => v && dl.append(h("dt", {}, k), h("dd", {}, v));
+  row("Applies to", [a.spec && `${a.spec}${a.baseUrl ? ` (${a.baseUrl})` : ""}`, ...(a.hosts || [])].filter(Boolean).join(", ") || "Nothing yet");
+  row("Signs in with", a.login ? `${a.how}: ${a.login.method} ${a.login.url}` : a.command ? `${a.how}: ${a.command}` : a.how);
+  row("Token goes in", a.placement);
+  row("Token", a.token);
+  row("Signed in", a.obtainedAt && `${clock(a.obtainedAt)} (${ago(a.obtainedAt)})`);
+  row("Expires", a.expiresAt && `${new Date(a.expiresAt).toLocaleString("en-GB", { hour12: false })}${new Date(a.expiresAt) > Date.now() ? ` (in ${untilText(a.expiresAt)})` : " (expired)"}`);
+  row("Last attempt", a.attemptedAt && a.attemptedAt !== a.obtainedAt ? `${clock(a.attemptedAt)} (${ago(a.attemptedAt)})` : null);
+  wrap.append(dl);
+  const busy = a.state === "misconfigured";
+  wrap.append(h("div", { class: "row" },
+    h("button", { class: "btn" + (a.needsAction || ["expired", "rejected", "none"].includes(a.state) ? " primary" : ""), disabled: busy, onclick: () => signInNow(a.name), title: "Sign in now, even if the token is still valid" }, icon("refresh"), a.token ? "Sign in again" : "Sign in now"),
+    a.login ? h("button", { class: "btn", onclick: () => openSignInRequest(a.name), title: "Open the sign-in request to send it yourself, or change what it sends" }, icon("send"), "Open sign-in request") : null,
+    a.loginCallId ? h("button", { class: "btn", onclick: () => openCall(a.loginCallId), title: "What was sent and what came back the last time" }, icon("clock"), "Show last sign-in") : null,
+    a.token ? h("button", { class: "btn", onclick: async () => { if (!confirm(`Forget the token for ${a.name}? jodrell signs in again on the next request.`)) return; await api(`/api/auth/${encodeURIComponent(a.name)}`, { method: "DELETE" }); await loadAuth(); refreshAuthUi(); } }, "Sign out") : null));
+  wrap.append(h("p", { class: "help" }, a.login
+    ? "jodrell signs in by itself when a request needs it, and again when the token expires or the API rejects it. To try it by hand, open the sign-in request and press Send: if it works, jodrell keeps the new token."
+    : "jodrell gets a token by itself when a request needs it, and again when it expires or the API rejects it."),
+    h("p", { class: "help" }, 'To change how this signs in, edit "auth" in jodrell.config.json. Passwords and secrets come from .env or your environment, written as {{env.NAME}}.'));
+  return wrap;
+}
 function renderEnvSelect() {
   $("#envSel").innerHTML = `<option value="">No environment</option>` + S.envs.map((e) => `<option value="${e.id}" ${e.active ? "selected" : ""}>${esc(e.name)}</option>`).join("");
 }
@@ -680,6 +801,7 @@ $("#sessSel").onchange = (e) => { S.session = e.target.value; store.set("session
 /* ============ sidebar ============ */
 /* ---- icons (16px, drawn to sit with Segoe UI) ---- */
 const ICONS = {
+  key: '<svg viewBox="0 0 16 16"><circle cx="5" cy="8" r="3.1" fill="#D9A55B" stroke="#A8722C" stroke-width="1.2"/><circle cx="4.6" cy="8" r="1" fill="var(--raised)"/><path d="M8.1 8h6.2M12.2 8v2.6M14.1 8v2" stroke="#A8722C" stroke-width="1.4" fill="none" stroke-linecap="round"/></svg>',
   logo: '<svg viewBox="0 0 16 16"><path d="M2.6 5.2a7.2 7.2 0 0 0 8.2 8.2z" fill="var(--raised)" stroke="var(--ink)" stroke-width="1.1" stroke-linejoin="round"/><path d="M6.7 9.3l3.4-3.4" stroke="var(--ink)" stroke-width="1.1"/><circle cx="10.8" cy="5.2" r="1.3" fill="var(--focus)"/><path d="M12.4 2.6a2.8 2.8 0 0 1 1.1 1.1M13.2 1.2a4.6 4.6 0 0 1 1.7 1.7" fill="none" stroke="var(--focus)" stroke-width="1" stroke-linecap="round"/><path d="M4.5 14.5h5" stroke="var(--ink)" stroke-width="1.1" stroke-linecap="round"/></svg>',
   folder: '<svg viewBox="0 0 16 16"><path d="M1.5 3.5h4.3l1.4 1.5h7.3v8.5h-13z" fill="var(--folder-back)"/><path d="M1.5 6.2h13v7.3h-13z" fill="var(--folder-front)"/></svg>',
   folderOpen: '<svg viewBox="0 0 16 16"><path d="M1.5 3.5h4.3l1.4 1.5h7.3v2H1.5z" fill="var(--folder-back)"/><path d="M1.5 3.5v10" stroke="var(--folder-back)"/><path d="M3 7.2h12.3l-1.8 6.3H1.5z" fill="var(--folder-front)"/></svg>',
@@ -785,6 +907,16 @@ function renderSide() {
       if (!open) continue;
       if (problem) out.push(h("div", { class: "node warn", style: "--d:2" }, h("span", { class: "tw" }), h("span", {}, problem)));
       for (const o of ops) out.push(navNode({ depth: 2, method: o.method, label: o.summary || o.id, sel: S.active === `op:${o.id}`, dirty: isDirty(S.docs.get(`op:${o.id}`)), title: `${o.method} ${o.path}`, onclick: () => openOperation(o) }));
+    }
+  }
+
+  // Sign-in: auth profiles from jodrell.config.json, with their state
+  if (S.auth.length) {
+    const as = section("signin", "Sign-in", "key");
+    out.push(as.el);
+    if (as.open) for (const a of S.auth) {
+      const l = authLook(a);
+      out.push(navNode({ depth: 1, ic: "key", label: a.name, aside: h("span", { class: "authpill " + l.cls }, l.short), title: `${a.name}: ${l.label}\n${a.message}`, sel: S.active === `auth:${a.name}` || currentTab()?.authName === a.name, onclick: () => openKey(`auth:${a.name}`) }));
     }
   }
 
@@ -955,7 +1087,14 @@ async function ensureDoc(key) {
   if (S.docs.has(key)) return true;
   const i = key.indexOf(":"), kind = i < 0 ? key : key.slice(0, i), id = i < 0 ? "" : key.slice(i + 1);
   if (key === "feed" || key === "timeline") { S.docs.set(key, { kind: key, key, title: key === "feed" ? "Feed" : "Timeline" }); return true; }
-  if (key === "history" || key === "drafts" || kind === "c" || kind === "f" || kind === "spec") { S.docs.set(key, { kind: "list", key, container: key }); return true; }
+  if (key === "history" || key === "drafts" || key === "signin" || kind === "c" || kind === "f" || kind === "spec") { S.docs.set(key, { kind: "list", key, container: key }); return true; }
+  if (kind === "auth") { if (!S.auth.some((a) => a.name === id)) await loadAuth(); if (!S.auth.some((a) => a.name === id)) return false; S.docs.set(key, { kind: "list", key, container: "signin", authName: id, title: id }); return true; }
+  if (kind === "authreq") {
+    const d = await api(`/api/auth/${encodeURIComponent(id)}/request`).catch(() => null);
+    if (!d) return false;
+    const t = requestTab({ draft: d, title: `Sign in: ${id}` });
+    t.key = key; t.authName = id; S.docs.set(key, t); return true;
+  }
   if (kind === "item") {
     const ix = S.index.get(Number(id));
     if (!ix || ix.item.kind !== "request") return false;
@@ -983,6 +1122,7 @@ function containerOf(t) {
   if (!t) return null;
   if (t.kind === "list") return t.container;
   if (t.kind !== "request") return null;
+  if (t.authName) return "signin";
   if (t.itemId) { const ix = S.index.get(t.itemId); if (ix) return ix.item.parentId ? `f:${ix.item.parentId}` : `c:${ix.collectionId}`; }
   if (t.opId) { const o = S.ops.find((x) => x.id === t.opId); const sp = o && S.specs.find((s) => s.title === o.spec); if (sp) return `spec:${sp.source}`; }
   if (t.fromCall) return "history";
@@ -1069,9 +1209,9 @@ function renderView() {
   const sel = t.kind === "request" ? t : null;
   const list = h("div", { class: "listpane", "aria-label": "Contents" });
   const det = h("div", { class: "detail" });
-  v.replaceChildren(h("div", { class: "three" + (sel ? " has-sel" : "") }, list, det));
-  renderList(list, cont, sel?.key);
-  det.append(sel ? requestView(sel) : summaryView(cont));
+  v.replaceChildren(h("div", { class: "three" + (sel || t.authName ? " has-sel" : "") }, list, det));
+  renderList(list, cont, sel?.key || (t.authName ? `auth:${t.authName}` : undefined));
+  det.append(sel ? requestView(sel) : t.authName ? authDetail(t.authName) : summaryView(cont));
 }
 let listTimer;
 function refreshListSoon() { clearTimeout(listTimer); listTimer = setTimeout(() => { if (S.listEl?.isConnected) renderList(S.listEl, S.listCont, S.active); }, 250); }
@@ -1133,6 +1273,14 @@ function listModel(cont) {
         cells: [h("span", { class: "mono muted" }, new Date(c.ts).toDateString() === new Date().toDateString() ? clock(c.ts).slice(0, 5) : new Date(c.ts).toLocaleDateString("en-GB", { day: "numeric", month: "short" })),
           nameCell([h("span", { class: "m m-" + c.method }, c.method), h("span", { class: "nm" }, c.item_name ? c.item_name.split(" / ").pop() : pathOf(c.url))]), statusCell(c), h("span", { class: "muted" }, `${c.duration_ms ?? ""} ms`), c.source === "agent" ? h("span", { class: "tag agent" }, "Agent") : h("span", { class: "muted" }, "You")] })),
       defaultSort: { col: 0, dir: -1 },
+    };
+  }
+  if (cont === "signin") {
+    return {
+      title: "Sign-in", empty: 'No auth profiles. Add "auth" to jodrell.config.json to have jodrell sign in for you.',
+      cols: [["Name", "minmax(110px, 1fr)"], ["Status", "minmax(120px, 1.2fr)"], ["Applies to", "minmax(90px, 1fr)"]],
+      rows: S.auth.filter((a) => hit(a.name, a.spec, ...(a.hosts || []))).map((a) => ({ key: `auth:${a.name}`, sort: [a.name.toLowerCase(), a.state, a.spec || ""], title: a.message,
+        cells: [nameCell([icon("key"), h("span", { class: "nm" }, a.name)]), authPill(a, authLook(a).short), h("span", { class: "muted" }, a.spec || (a.hosts || []).join(", "))] })),
     };
   }
   if (cont === "drafts") {
@@ -1219,6 +1367,12 @@ function summaryView(cont) {
       h("p", { class: "muted" }, `${S.calls.length} request${S.calls.length === 1 ? "" : "s"} recorded, ${today.length} today${today.filter((c) => c.source === "agent").length ? `, ${today.filter((c) => c.source === "agent").length} by your agent` : ""}.`));
     actions.append(h("button", { class: "btn", onclick: () => openKey("feed") }, icon("feed"), "Feed"), h("button", { class: "btn", onclick: openTimeline }, icon("clock"), "Timeline"), h("button", { class: "btn", onclick: () => $("#cmdExport").click() }, icon("export"), "Export HTML"));
     wrap.append(actions, h("p", { class: "help" }, "Select a request to see what was sent and what came back. Edit it and press Send to try again."));
+  } else if (cont === "signin") {
+    const bad = S.auth.filter((a) => a.needsAction).length;
+    wrap.append(h("div", { class: "sum-title" }, icon("key"), h("h2", {}, "Sign-in")),
+      h("p", { class: "muted" }, `${S.auth.length} auth profile${S.auth.length === 1 ? "" : "s"}${bad ? `, ${bad} needing you` : ""}.`),
+      h("p", { class: "help" }, "jodrell signs in to these APIs by itself, adds the token to their requests, and signs in again when a token expires or is rejected. Select one to see its state, sign in again, or open its sign-in request."),
+      h("p", { class: "help" }, 'Profiles are set in "auth" in jodrell.config.json.'));
   } else if (cont === "drafts") {
     wrap.append(h("div", { class: "sum-title" }, icon("newdoc"), h("h2", {}, "Unsaved requests")),
       h("p", { class: "help" }, "Requests you've edited but not saved are kept here automatically, even if you close jodrell. Save one to put it in a collection, or open it and press Revert to drop the changes."));
@@ -1268,9 +1422,10 @@ function requestView(t) {
     if (!confirm("Drop your unsaved changes to this request?")) return;
     t.draft = normalise(JSON.parse(t.saved)); persistDrafts(); renderView(); renderSideSoon();
   } }, isNew ? "Discard" : "Revert");
-  const where = t.itemId ? (S.index.get(t.itemId)?.trail || []).slice(0, -1).join(" / ") : t.fromCall ? `History, sent ${t.response ? ago(t.response.ts) : ""}${t.response?.source === "agent" ? " by your agent" : ""}` : t.opId ? "From your API spec" : "Not saved yet";
-  root.append(h("div", { class: "dtitle" }, h("span", { class: "m m-" + d.method, "data-title-method": "" }, d.method), titleEl, h("span", { class: "muted where" }, where), draftChip, h("span", { class: "grow" }), revert));
-  t._els = { ...(t._els || {}), titleEl, draftChip, revert };
+  const authChip = h("span", { class: "chip authchip", hidden: true, role: "button", tabindex: 0, onkeydown: (e) => { if (e.key === "Enter") authChip.click(); } });
+  const where = t.authName ? "Signs in for this API" : t.itemId ? (S.index.get(t.itemId)?.trail || []).slice(0, -1).join(" / ") : t.fromCall ? `History, sent ${t.response ? ago(t.response.ts) : ""}${t.response?.source === "agent" ? " by your agent" : ""}` : t.opId ? "From your API spec" : "Not saved yet";
+  root.append(h("div", { class: "dtitle" }, h("span", { class: "m m-" + d.method, "data-title-method": "" }, d.method), titleEl, h("span", { class: "muted where" }, where), authChip, draftChip, h("span", { class: "grow" }), revert));
+  t._els = { ...(t._els || {}), titleEl, draftChip, revert, authChip };
   root.append(h("div", { class: "rbar" }, method, urlbox, sendBtn, saveBtn));
   t._els = { ...t._els, hl, input, resolved, method };
   updateUrlBar(t, vars);
@@ -1293,6 +1448,7 @@ function updateUrlBar(t, vars = varsFor(t)) {
   for (const p of d.pathVars) if (p.key) r = r.replace(new RegExp(`/:${p.key}(?=/|\\?|#|$)`), "/" + (resolveStr(p.value, vars, missing) || `:${p.key}`));
   if (missing.size) e.resolved.innerHTML = `<span class="bad">Not set: ${[...missing].map((m) => esc(`{{${m}}}`)).join(", ")}</span>. Add ${missing.size > 1 ? "them" : "it"} to the environment or the collection's variables.`;
   else e.resolved.textContent = r !== d.url ? r : "";
+  updateAuthChip(t);
 }
 
 /* ---- request sub-panes ---- */
@@ -2044,6 +2200,7 @@ function connect() {
   es.addEventListener("collections", async () => { await loadCollections(); renderSideSoon(); refreshListSoon(); });
   es.addEventListener("environments", async () => { await loadEnvs(); renderSideSoon(); const t = currentTab(); if (t?.kind === "request") updateUrlBar(t); if (t?.kind === "env") renderView(); });
   es.addEventListener("session", async () => { await loadSessions(); renderSideSoon(); });
+  es.addEventListener("auth", async () => { await loadAuth(); refreshAuthUi(); });
   es.addEventListener("specs", async () => { [S.ops, S.specs] = await Promise.all([api("/api/operations"), api("/api/specs")]); renderSideSoon(); });
   es.addEventListener("cleared", () => { S.calls = []; S.runs.clear(); updateCount(); renderSide(); });
 }
@@ -2108,6 +2265,7 @@ function crumbsFor(t) {
   if (cont?.startsWith("f:")) { const fid = Number(cont.slice(2)); return { ic: "folderOpen", parts: [P, ...colCrumbs(S.index.get(fid)?.collectionId, folderChain(fid)), ...leaf] }; }
   if (cont?.startsWith("spec:")) { const sp = S.specs.find((x) => `spec:${x.source}` === cont); return { ic: "spec", parts: [P, ["API specs"], [sp?.title || "Spec", () => openKey(cont)], ...leaf] }; }
   if (cont === "history") return { ic: "clock", parts: [P, ["History", () => openKey("history")], ...leaf] };
+  if (cont === "signin") { const nm = t.authName; return { ic: "key", parts: [P, ["Sign-in", () => openKey("signin")], ...(nm ? [[nm, t.kind === "request" ? () => openKey(`auth:${nm}`) : null]] : []), ...leaf] }; }
   return { ic: "newdoc", parts: [P, ["Unsaved requests", () => openKey("drafts")], ...leaf] };
 }
 function updateChrome() {
@@ -2144,7 +2302,7 @@ $("#navUp").onclick = () => { const up = S.active ? parentOf(S.active) : null; i
 $("#navRefresh").onclick = async () => {
   try {
     await api("/api/specs/reload", { method: "POST" }).catch(() => {});
-    const [calls, runs] = await Promise.all([api("/api/calls?limit=2000"), api("/api/runs"), loadCollections(), loadEnvs(), loadSessions()]);
+    const [calls, runs] = await Promise.all([api("/api/calls?limit=2000"), api("/api/runs"), loadCollections(), loadEnvs(), loadSessions(), loadAuth()]);
     S.calls = calls; runs.forEach((r) => S.runs.set(r.id, r));
     renderSide(); renderView(); updateCount(); toast("Refreshed");
   } catch (e) { toast(e.message); }
@@ -2181,7 +2339,7 @@ async function init() {
   paintIcons(); applyLayout();
   applyTheme();
   if (store.get("noside", innerWidth < 720)) $("#main").classList.add("noside");
-  const [info, ops, runs, calls, specsList] = await Promise.all([api("/api/info"), api("/api/operations"), api("/api/runs"), api("/api/calls?limit=2000"), api("/api/specs"), loadCollections(), loadEnvs(), loadSessions()]);
+  const [info, ops, runs, calls, specsList] = await Promise.all([api("/api/info"), api("/api/operations"), api("/api/runs"), api("/api/calls?limit=2000"), api("/api/specs"), loadCollections(), loadEnvs(), loadSessions(), loadAuth()]);
   S.specs = specsList;
   S.info = info; S.ops = ops; S.calls = calls;
   if (info.project) { document.title = `jodrell – ${info.project}`; $("#projName").textContent = info.project; }
@@ -2193,7 +2351,9 @@ async function init() {
   if (fromHash) await ensureDoc(`call:${fromHash}`) && (S.active = `call:${fromHash}`);
   else if (lastKey && await ensureDoc(lastKey).catch(() => false)) S.active = lastKey;
   navHist.stack = [S.active]; navHist.pos = 0;
-  renderSide(); renderView(); updateCount();
+  renderSide(); renderView(); updateCount(); updateAuthStatus();
+  // Keep "expires in" and expired states current without waiting for an event.
+  setInterval(() => { if (S.auth.length) loadAuth().then(refreshAuthUi); }, 30000);
   connect();
 }
 window.addEventListener("hashchange", () => { const id = +(location.hash.match(/call-(\d+)/)?.[1] || 0); if (id) openCall(id); });

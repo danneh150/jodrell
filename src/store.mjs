@@ -48,6 +48,11 @@ CREATE TABLE IF NOT EXISTS sessions (
   cookies TEXT NOT NULL DEFAULT '{}',
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS auth_state (
+  name TEXT PRIMARY KEY,
+  data TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL
+);
 `;
 
 const J = (v) => (v == null ? null : JSON.stringify(v));
@@ -158,5 +163,27 @@ export class Store extends EventEmitter {
 
   sessions() {
     return this.db.prepare("SELECT name FROM sessions ORDER BY name").all().map((r) => this.getSession(r.name));
+  }
+
+  // Auth profiles: the current token (or cookies), when it was obtained and
+  // when it expires, and the last problem. Kept on disk in .jodrell/ (which
+  // git ignores), so the GUI and the agent's jodrell share one sign-in.
+  getAuthState(name) {
+    const r = this.db.prepare("SELECT * FROM auth_state WHERE name = ?").get(name);
+    return r ? { ...P(r.data, {}), name, updated_at: r.updated_at } : { name };
+  }
+
+  saveAuthState(st) {
+    const now = new Date().toISOString();
+    const { name, updated_at, ...data } = st;
+    this.db.prepare(`INSERT INTO auth_state (name, data, updated_at) VALUES (?,?,?)
+      ON CONFLICT(name) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`).run(name, J(data), now);
+    this.emit("auth", { name });
+    return { ...data, name, updated_at: now };
+  }
+
+  deleteAuthState(name) {
+    this.db.prepare("DELETE FROM auth_state WHERE name = ?").run(name);
+    this.emit("auth", { name });
   }
 }

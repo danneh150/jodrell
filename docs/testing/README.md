@@ -21,6 +21,7 @@ They use Node's built-in test runner. Everything runs locally: each test gets it
 | `test/unit/collections` | Postman import, collections and folders, environments, script conversion |
 | `test/unit/resolve` | Variables, inherited auth and body types, in what's actually sent |
 | `test/unit/store` | The project database, including upgrading older databases |
+| `test/unit/auth` | Auth profiles: signing in automatically, expiry, signing in again after a 401, other sign-in methods, the GUI's status |
 | `test/unit/runner` | Sending requests, sessions and cookies, captures, collection runs, replay |
 | `test/unit/html` | The HTML report, the agent's in-reply view, timeline data |
 | `test/unit/project` | Project root, config, the data folder, spec sources and watching |

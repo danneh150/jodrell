@@ -25,12 +25,38 @@ describe("the tools on offer", () => {
   test("every tool is there, with the in-reply view on the right ones", async () => {
     const tools = (await client.listTools()).tools;
     const names = tools.map((t) => t.name);
-    for (const n of ["send_request", "call_operation", "run_request", "run_collection", "show_history", "show_request", "export_report", "open_gui", "import_collection", "list_collections", "describe_request", "save_request", "list_environments", "use_environment", "set_variable", "set_session", "list_sessions", "get_history", "get_call", "start_run", "list_operations", "describe_operation", "list_specs", "reload_specs", "get_call_view"]) assert.ok(names.includes(n), n);
+    for (const n of ["send_request", "call_operation", "run_request", "run_collection", "show_history", "show_request", "export_report", "open_gui", "import_collection", "list_collections", "describe_request", "save_request", "list_environments", "use_environment", "set_variable", "set_session", "list_sessions", "get_history", "get_call", "start_run", "list_operations", "describe_operation", "list_specs", "reload_specs", "get_call_view", "auth_status", "sign_in"]) assert.ok(names.includes(n), n);
     const ui = tools.filter((t) => t._meta?.ui?.resourceUri).map((t) => t.name);
     for (const n of ["send_request", "call_operation", "run_request", "run_collection", "show_history", "show_request"]) assert.ok(ui.includes(n), `${n} shows a view`);
     assert.deepEqual(tools.find((t) => t.name === "get_call_view")._meta.ui.visibility, ["app"], "the detail loader is for the view only");
     const res = await client.readResource({ uri: "ui://jodrell/view.html" });
     assert.equal(res.contents[0].mimeType, "text/html;profile=mcp-app");
+  });
+});
+
+describe("signing in", () => {
+  test("auth_status, automatic sign-in on a request, and sign_in", async () => {
+    const cfg = `${core.root}/jodrell.config.json`;
+    let r = await call("auth_status");
+    assert.match(r.text, /^No auth profiles/);
+    fs.writeFileSync(cfg, JSON.stringify({ auth: { fake: { login: { url: `${api.url}/login`, body: { password: "{{env.FAKE_PASS}}" } }, hosts: ["127.0.0.1"] } } }));
+    fs.writeFileSync(`${core.root}/.env`, "FAKE_PASS=secret");
+    try {
+      r = await call("auth_status");
+      assert.match(r.text, /^fake \(none\): Not signed in yet/);
+      assert.match(r.text, /Applies to: 127\.0\.0\.1/);
+      r = await call("send_request", { url: `${api.url}/me` });
+      assert.match(r.text, /HTTP 200/);
+      assert.match(r.text, /Before sending this, jodrell signed in for "fake"\./);
+      r = await call("auth_status");
+      assert.match(r.text, /^fake \(valid\)/);
+      r = await call("sign_in", { name: "fake" });
+      assert.match(r.text, /^Signed in for "fake"\. The token expires at/);
+      r = await call("send_request", { url: `${api.url}/me`, auth: false });
+      assert.match(r.text, /HTTP 401/, "auth: false sends without the token");
+      r = await call("sign_in", { name: "nope" });
+      assert.equal(r.isError, true);
+    } finally { fs.rmSync(cfg); fs.rmSync(`${core.root}/.env`); }
   });
 });
 

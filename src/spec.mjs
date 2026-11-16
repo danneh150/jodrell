@@ -64,7 +64,21 @@ function fromSwagger2(d) {
       paths[p][k] = op;
     }
   }
-  return { openapi: "3.0.0", info: d.info, servers, paths, components: { schemas: d.definitions || {} } };
+  return { openapi: "3.0.0", info: d.info, servers, paths, security: d.security, components: { schemas: d.definitions || {}, securitySchemes: securityFromSwagger2(d.securityDefinitions) } };
+}
+
+// Swagger 2.0 securityDefinitions -> OpenAPI 3 securitySchemes.
+function securityFromSwagger2(defs = {}) {
+  const out = {};
+  for (const [name, d] of Object.entries(defs || {})) {
+    if (d.type === "basic") out[name] = { type: "http", scheme: "basic" };
+    else if (d.type === "apiKey") out[name] = { type: "apiKey", in: d.in, name: d.name };
+    else if (d.type === "oauth2") {
+      const flow = { application: "clientCredentials", password: "password", accessCode: "authorizationCode", implicit: "implicit" }[d.flow] || d.flow;
+      out[name] = { type: "oauth2", flows: { [flow]: { tokenUrl: d.tokenUrl, authorizationUrl: d.authorizationUrl, scopes: d.scopes || {} } } };
+    }
+  }
+  return out;
 }
 
 function serverUrl(doc) {
@@ -92,6 +106,8 @@ function buildOps(doc, specName, baseUrl) {
         params: params.map((x) => ({ name: x.name, in: x.in, required: !!x.required, schema: x.schema, description: x.description })),
         requestBody: op.requestBody ? { required: !!op.requestBody.required, schema: json?.schema } : null,
         responses: op.responses || {}, baseUrl,
+        // null: the spec doesn't say; []: no auth needed (a public endpoint)
+        security: op.security ?? doc.security ?? null,
       });
     }
   }
@@ -131,6 +147,8 @@ export class SpecIndex {
         entry.version = doc.info?.version || "";
         entry.kind = swagger ? "Swagger 2.0" : `OpenAPI ${String(raw.openapi)}`;
         entry.servers = doc.servers || [];
+        entry.securitySchemes = doc.components?.securitySchemes || {};
+        entry.security = doc.security || null;
 
         // Base URL: explicit > override > absolute server URL > relative server
         // URL joined to the app URL (or the URL the spec came from) > fallback.

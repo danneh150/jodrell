@@ -1,14 +1,14 @@
 // Builds and sends requests, applies sessions, validates against the spec and
 // records every call. Used by the MCP tools, the web UI and collection runs.
 import { createRequire } from "node:module";
-import { redactHeaders, validateResponse, isSecretHeader, mask } from "./checks.mjs";
+import { redactHeaders, redactBody, validateResponse, isSecretHeader, mask } from "./checks.mjs";
 import { makeVars, resolveRequest, effectiveAuth } from "./collections.mjs";
 
 const VERSION = createRequire(import.meta.url)("../package.json").version;
 const STORE_BODY_LIMIT = 1_000_000; // bytes kept in history per response
 const TIMEOUT_MS = 30_000;
 
-// Raw secret headers from direct calls, kept in memory only so replay works
+// Raw secret headers from direct calls (by database and call id), kept in memory only so replay works
 // without writing secrets to disk.
 const rawSecrets = new Map();
 
@@ -80,10 +80,11 @@ function bodyText(body) {
 }
 
 export class Runner {
-  constructor({ store, specs, collections }) {
+  constructor({ store, specs, collections, auth }) {
     this.store = store;
     this.specs = specs;
     this.collections = collections;
+    this.auth = auth;
   }
 
   // Build a request from an operation and its arguments.
@@ -108,9 +109,13 @@ export class Runner {
     return { op, method: op.method, url: url.toString(), headers, body };
   }
 
-  envVars() { return makeVars(this.collections?.activeEnv()?.vars); }
+  // {{env.NAME}} (your environment and .env), then the active environment.
+  envVars() { return makeVars(this.auth?.env(), this.collections?.activeEnv()?.vars); }
 
-  async send({ op, method, url, headers = {}, body, session, note, source = "agent", runId, capture, replayOf, itemId, itemName, expectStatus }) {
+  // auth: false skips auth profiles. authLogin names the profile this request
+  // signs in for (set by jodrell's own sign-in).
+  async send(args) {
+    let { op, method, url, headers = {}, body, session, note, source = "agent", runId, capture, replayOf, itemId, itemName, expectStatus, auth: useAuth = true, authLogin, authRetry } = args;
     const sess = session ? this.store.getSession(session) : null;
     const vars = { ...this.envVars(), ...(sess?.vars || {}) };
     url = fill(url, vars);
@@ -120,6 +125,7 @@ export class Runner {
     if (!/^https?:\/\//i.test(url)) throw new Error(`"${url}" isn't a full http(s) URL.`);
     op = op || this.specs.match(method, url);
     const host = hostOf(url);
+    const loginProfile = this.auth ? (authLogin ? this.auth.profile(authLogin) : this.auth.loginFor(method, url)) : null;
 
     const h = { ...(sess ? sessionHeadersFor(sess.headers, host) : {}), ...headers };
     const lower = (n) => Object.keys(h).some((k) => k.toLowerCase() === n);
@@ -135,10 +141,28 @@ export class Runner {
     if (!lower("accept")) h.accept = "application/json, */*";
     if (!lower("user-agent")) h["user-agent"] = `jodrell/${VERSION}`;
 
+    // Auth profiles: sign in if needed, then add the token. A request that
+    // already has its own auth header is left alone.
+    let authProfile = null, authApplied = false, shownUrl = url, authNote = null, autoHeader = null;
+    if (this.auth && useAuth !== false && !loginProfile) {
+      authProfile = this.auth.forRequest(method, url, op);
+      if (authProfile) {
+        let got;
+        try { got = await this.auth.ensure(authProfile, this, { source, runId }); }
+        catch (e) {
+          const error = `Not sent: couldn't sign in for "${authProfile.name}". ${e.message} Fix that, or send with auth turned off.`;
+          return this.store.addCall({ run_id: runId, ts: new Date().toISOString(), source, op_id: op?.id, method, url, session, note, req_headers: redactHeaders(h), req_body: bodyText(reqBody), replay_of: replayOf, item_id: itemId, item_name: itemName, expect_status: expectStatus ? Number(expectStatus) : null, duration_ms: 0, error });
+        }
+        const r = this.auth.applyTo(authProfile, got.st, h, url);
+        authApplied = r.applied; url = r.url; shownUrl = r.shownUrl || url; autoHeader = r.header;
+        if (got.signedIn) authNote = `jodrell signed in for "${authProfile.name}"`;
+      }
+    }
+
     const started = Date.now();
     const record = {
-      run_id: runId, ts: new Date().toISOString(), source, op_id: op?.id, method, url, session, note,
-      req_headers: redactHeaders(h), req_body: bodyText(reqBody), replay_of: replayOf,
+      run_id: runId, ts: new Date().toISOString(), source, op_id: op?.id, method, url: shownUrl, session, note,
+      req_headers: redactHeaders(h), req_body: loginProfile ? redactBody(bodyText(reqBody)) : bodyText(reqBody), replay_of: replayOf,
       item_id: itemId, item_name: itemName, expect_status: expectStatus ? Number(expectStatus) : null,
     };
 
@@ -157,7 +181,7 @@ export class Runner {
       Object.assign(record, {
         status: res.status,
         res_headers: redactHeaders(resHeaders),
-        res_body: text === null ? `[${buf.length} bytes of ${type || "binary data"}]` : text.slice(0, STORE_BODY_LIMIT),
+        res_body: text === null ? `[${buf.length} bytes of ${type || "binary data"}]` : loginProfile ? redactBody(text.slice(0, STORE_BODY_LIMIT)) : text.slice(0, STORE_BODY_LIMIT),
         res_size: buf.length,
         res_type: type,
         truncated: text !== null && text.length > STORE_BODY_LIMIT,
@@ -167,6 +191,8 @@ export class Runner {
       call = this.store.addCall(record);
       call.ctx = { body: (() => { try { return JSON.parse(text); } catch { return text; } })(), header: Object.fromEntries(Object.entries(resHeaders).map(([k, v]) => [k.toLowerCase(), v])), headers: resHeaders, status: res.status };
       if (capture && session) call.captured = this.applyCapture(session, capture, call.ctx, host);
+      if (loginProfile) call.auth = { profile: loginProfile.name, ...this.auth.acceptLogin(loginProfile, { ctx: call.ctx, setCookies, host, callId: call.id }) };
+      else if (authProfile) call.auth = { profile: authProfile.name, applied: authApplied, note: authNote };
     } catch (e) {
       const cause = e.cause?.errors?.[0] || e.cause;
       const reason = e.name === "TimeoutError" ? `Timed out after ${TIMEOUT_MS / 1000}s`
@@ -176,8 +202,21 @@ export class Runner {
         : cause?.message ? `Request failed: ${cause.message}` : e.message;
       call = this.store.addCall({ ...record, duration_ms: Date.now() - started, error: reason });
     }
-    const secrets = Object.fromEntries(Object.entries(h).filter(([k]) => isSecretHeader(k) && k.toLowerCase() !== "cookie"));
-    if (Object.keys(secrets).length) rawSecrets.set(call.id, secrets);
+    // Kept for replay. A token jodrell added itself isn't: replay adds the current one.
+    const secrets = Object.fromEntries(Object.entries(h).filter(([k]) => isSecretHeader(k) && k.toLowerCase() !== "cookie" && k !== autoHeader));
+    if (Object.keys(secrets).length) rawSecrets.set(`${this.store.file}#${call.id}`, secrets);
+
+    // The API rejected jodrell's token: sign in again and send once more.
+    if (authApplied && call.status === 401) {
+      this.auth.markRejected(authProfile, call.status);
+      if (!authRetry) {
+        try { await this.auth.ensure(authProfile, this, { force: true, source, runId }); }
+        catch { return call; }
+        const again = await this.send({ ...args, authRetry: true, note: [note, `sent again after jodrell signed in for "${authProfile.name}"`].filter(Boolean).join(". ") });
+        again.retriedFrom = call.id;
+        return again;
+      }
+    }
     return call;
   }
 
@@ -221,7 +260,7 @@ export class Runner {
     const col = colId ? this.collections.getCollection(colId) : null;
     const ancestors = item ? this.collections.ancestors(item) : [];
     const sess = session ? this.store.getSession(session) : null;
-    const vars = makeVars(col?.variables, this.collections.activeEnv()?.vars, sess?.vars, extra);
+    const vars = makeVars(this.auth?.env(), col?.variables, this.collections.activeEnv()?.vars, sess?.vars, extra);
     const r = resolveRequest(request, { vars, auth: effectiveAuth(request, ancestors, col) });
     if (r.unresolved.length) throw Object.assign(new Error(`Unresolved variables: ${r.unresolved.map((v) => `{{${v}}}`).join(", ")}. Set them in the environment or the collection's variables.`), { status: 400 });
     const call = await this.send({
@@ -264,7 +303,7 @@ export class Runner {
   async replay(id, edits = {}, runId) {
     const orig = this.store.getCall(id);
     if (!orig) throw new Error(`No call with id ${id}`);
-    const headers = { ...(edits.headers ?? orig.req_headers), ...(rawSecrets.get(orig.id) || {}) };
+    const headers = { ...(edits.headers ?? orig.req_headers), ...(rawSecrets.get(`${this.store.file}#${orig.id}`) || {}) };
     for (const [k, v] of Object.entries(headers)) if (String(v).includes("••••")) delete headers[k];
     const body = edits.body !== undefined ? edits.body : orig.req_body;
     return this.send({

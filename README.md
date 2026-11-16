@@ -19,8 +19,6 @@ Other API clients are apps you work in, with AI added to help you. jodrell turns
 
 Every request, yours and your agent's, goes into one history you can browse, compare, replay and save.
 
-It's named after **Jodrell Bank**, the observatory in Cheshire whose giant dish has listened to signals from deep space since 1957. Back then, it was the only telescope in the West that could track the rocket that launched Sputnik 1. jodrell does the same for your agent: everything it sends and receives is picked up and shown to you. The pixel-art icon is a nod to the dish.
-
 <p align="center">
   <img src="docs/images/gui-request.png" alt="The jodrell GUI: a navigation tree with collections, API specs and history; a list of requests in a folder; and a request with its response shown as a tree" width="100%">
 </p>
@@ -36,16 +34,16 @@ It's named after **Jodrell Bank**, the observatory in Cheshire whose giant dish 
 - [How it works](#how-it-works)
 - [A tour](#a-tour)
 - [Making sure your agent uses jodrell](#making-sure-your-agent-uses-jodrell)
-- [The GUI](#the-gui)
-- [Postman collections](#postman-collections)
 - [Your API specs](#your-api-specs)
+- [Signing in](#signing-in)
+- [Postman collections](#postman-collections)
 - [Variables, auth and cookies](#variables-auth-and-cookies)
 - [Reference](#reference): [configuration](#configuration), [commands](#commands), [agent tools](#agent-tools)
 - [Privacy and security](#privacy-and-security)
 - [Testing](#testing)
-- [Development](#development)
 - [Known limits and plans](#known-limits-and-plans)
 - [Credits and licence](#credits-and-licence)
+- [About the name](#about-the-name)
 
 ## Where it came from
 
@@ -63,9 +61,7 @@ Teams pass Postman collections around, and they drift. An endpoint changes or a 
 
 Most APIs make you log in or fetch a token before anything else works. In Postman, that means a login request, a script to save the token, and remembering to run it first, and again whenever the token expires.
 
-**What jodrell does today:** log in once (or ask your agent to), save the token into a session, and jodrell sends it with every later request to the same host, and only that host. Cookies work the same way.
-
-**What isn't solved yet:** someone still has to call the login endpoint, and do it again when the token expires. The plan is to describe auth once per API, so jodrell gets and refreshes tokens itself. See [Known limits and plans](#known-limits-and-plans).
+**jodrell signs in for you.** Describe how to sign in to each API once, in `jodrell.config.json`. When a request needs it, jodrell signs in, adds the token, and signs in again when the token expires or is rejected. Your agent never calls a login endpoint, and the GUI shows at a glance whether each API is signed in or needs you. See [Signing in](#signing-in).
 
 ### 3. Agents make the calls now, but you still need to see them
 
@@ -92,6 +88,7 @@ jodrell gives you and your agent one shared place for API work:
 - 🔒 **Keeps the agent honest:** in Claude Code, a guard redirects the agent's direct `curl`, `wget` and `fetch` calls to jodrell, so nothing slips past the history.
 - 🗂️ **A full API client:** collections and folders, a request builder (params, headers, every body type, auth, captures, expected status), curl paste, compare, replay, environments and a collection runner.
 - 📬 **Imports Postman:** collections (v2.0 and v2.1) and environments, with common test-script lines converted into built-in captures and checks.
+- 🔑 **Signs in for you:** describe each API's sign-in once, and jodrell gets tokens, adds them, and signs in again when they expire. The GUI shows which APIs are signed in and which need you.
 - 📄 **Finds your specs:** every OpenAPI and Swagger spec in the project, plus one your running app serves, reloaded when they change. Responses are checked against them.
 - 🕰️ **A history you can use:** a timeline by day and session, a live feed, and a self-contained HTML report that works offline.
 - 🪟 **A GUI with character:** an Explorer-style layout with no tabs, drafts kept automatically, a green meadow theme with pixel touches, and dark mode. It runs in a browser or in your terminal next to the agent.
@@ -257,86 +254,6 @@ To change the guard, set `"guard": "ask"` in `jodrell.config.json` to be asked e
 > [!NOTE]
 > This covers requests the agent makes. Requests made by code the agent runs (your tests, scripts, or the app itself) don't pass through the agent's tools. A recording proxy for those is on the [plans](#known-limits-and-plans).
 
-## The GUI
-
-The GUI looks like Windows File Explorer, in a green "meadow" theme with a hint of pixel-art games. It has light and dark themes and works at any width, including a narrow terminal pane.
-
-- **No tabs.** One thing is open at a time, and you move around with the tree, back, forward and Up (`Alt`+arrows), breadcrumbs and search.
-- **Drafts are kept automatically.** Edit a request, open something else, even close jodrell: your edit is still there. Drafts are marked with a dot and collected under **Unsaved requests**. Use **Save** to keep a draft in its collection, or **Revert** to drop it.
-
-  <img src="docs/images/drafts.png" alt="An edited request marked Unsaved changes, with a dot in the list and the tree, and a Revert button" width="100%">
-- **Three panes.** Select a collection, folder, spec or History, and you get a Details list (name, URL, last result, last sent) with the selected request on the right. The arrow keys move through the list and preview each request.
-- **A request builder:**
-  - **Params and path variables,** kept in sync with the URL
-  - **Headers**
-  - **Bodies:** JSON, text, XML, form, multipart and GraphQL
-  - **Auth:** inherit, bearer, basic or API key
-  - **After response:** save values from the response into variables, and check the expected status
-  - **Notes**
-
-  `{{variables}}` are coloured as you type (green if they'll resolve, red if not), with the final URL shown underneath. You can paste a curl command into the URL bar.
-- **The response:**
-  - **Body:** a tree, a table or raw text
-  - **Headers and cookies,** with cookies masked
-  - **Request sent:** exactly what went out, after variables and auth
-  - **Schema:** problems, highlighted on the exact field
-  - **Compare:** a diff against any earlier response
-- **Following your agent.** Its requests appear live in the feed and timeline. While you're browsing History, the newest is selected. If you're editing something, you get a notification instead of being interrupted.
-
-**Shortcuts:**
-
-| Keys | Action |
-| --- | --- |
-| `Ctrl`/`⌘`+`Enter` | Send |
-| `Ctrl`/`⌘`+`S` | Save |
-| `Ctrl`/`⌘`+`N` | New request |
-| `Alt`+`←`/`→` | Back and forward |
-| `F5` | Refresh |
-| `↑`/`↓` | Move through a list |
-
-<table>
-<tr>
-<td width="50%" valign="top"><a href="docs/images/schema.png"><img src="docs/images/schema.png" alt="A response with three schema mismatches highlighted on their fields"></a><br><sub>Schema problems, highlighted on the exact field</sub></td>
-<td width="50%" valign="top"><a href="docs/images/compare.png"><img src="docs/images/compare.png" alt="Comparing two responses, with the new order highlighted in green"></a><br><sub>Compare: the order the agent created, in green</sub></td>
-</tr>
-</table>
-
-**In the terminal.** `npx jodrell gui --pixel` (or `npx jodrell open` for the current pane) shows the same GUI inside your terminal using [Pixel](https://pixelgui.com):
-
-- **Terminals:** Ghostty, iTerm2, WezTerm, kitty and tmux, among others
-- **Install:** it comes with `npm install` as an optional dependency, and downloads its own Chromium
-- **Fallback:** if it isn't available, jodrell opens your browser instead
-- **Linux:** Pixel won't run as root
-
-<p align="center"><img src="docs/images/narrow.png" alt="The GUI at terminal-pane width in dark mode, showing one request" width="55%"></p>
-
-## Postman collections
-
-Import with `npx jodrell import <file>`, the **Import** button (drag and drop works), or by asking your agent. Collections v2.0 and v2.1 are supported, and so are environment exports.
-
-What comes across:
-
-- folders, and the order of requests
-- methods, URLs, query parameters and `:path` variables
-- headers, including disabled ones
-- raw, URL-encoded, form-data and GraphQL bodies
-- bearer, basic and API key auth, at request, folder and collection level
-- collection variables and descriptions
-
-**Scripts aren't run.** jodrell never executes collection code. Instead, it converts the lines people use most:
-
-- `pm.environment.set("token", pm.response.json().access_token)` (and the `collectionVariables`, `globals` and header variants) becomes a **save from the response** rule
-- `pm.response.to.have.status(201)` and its common variants become an **expected status** check
-
-Anything else is kept, read-only, on the request, and the import tells you how many lines it skipped.
-
-<table>
-<tr>
-<td width="50%" valign="top"><a href="docs/images/import.png"><img src="docs/images/import.png" alt="The Import dialog after importing a Postman collection, listing converted and skipped script lines"></a><br><sub>Importing: what was converted, and what wasn't</sub></td>
-<td width="50%" valign="top"><a href="docs/images/collection-run.png"><img src="docs/images/collection-run.png" alt="Running the imported collection: five requests, all passed, with captured values"></a><br><sub>Running it: the login token flows into later requests</sub></td>
-</tr>
-</table> Not supported yet: file uploads in multipart bodies, binary bodies, OAuth 2, and collection-level scripts. They're flagged on import.
-
 ## Your API specs
 
 jodrell searches your whole project for OpenAPI 3.x and Swagger 2.0 specs:
@@ -381,6 +298,85 @@ jodrell works best with specs that are accurate and complete: every operation, w
 
 **Third-party APIs:** many providers publish an OpenAPI spec, and the [APIs.guru directory](https://apis.guru) collects thousands of them. Save a copy in your project, and jodrell picks it up like any other spec.
 
+## Signing in
+
+Describe how to sign in to each API once, and jodrell does the rest. It signs in when a request needs it, adds the token, and signs in again when the token expires or the API rejects it. Neither you nor your agent calls the login endpoint first.
+
+Add `auth` to `jodrell.config.json`:
+
+```json
+{
+  "auth": {
+    "shop": {
+      "login": { "op": "login", "body": { "email": "dev@example.com", "password": "{{env.SHOP_PASS}}" } }
+    }
+  }
+}
+```
+
+Put the password in `.env` in your project (`SHOP_PASS=...`), or in your environment. That's all it needs:
+
+- **Which requests it applies to:** the spec the login operation belongs to. Requests to other APIs never get the token.
+- **Where the token goes:** whatever the spec's `securitySchemes` say (a bearer token, an API key header, query parameter or cookie), or `Authorization: Bearer` if it doesn't say.
+- **Where the token is in the response:** `access_token`, `token` and other common places are tried. If the response only sets a session cookie, jodrell uses that.
+- **When it expires:** from `expires_in`, or the token itself if it's a JWT.
+- **Public endpoints:** operations the spec marks as needing no auth (`security: []`) are sent without it.
+
+**Other ways to sign in:**
+
+| Profile | Use it for |
+| --- | --- |
+| `"login": { "op": "login", "body": { ... } }` | A login operation from your spec. Use `"url"` and `"method"` instead of `"op"` for one that isn't in a spec, and `"form": true` for a form-encoded body. |
+| `"clientCredentials": { "clientId": "{{env.ID}}", "clientSecret": "{{env.SECRET}}" }` | OAuth 2 client credentials. The token URL comes from the spec, or add `"tokenUrl"`. `"scope"` and `"audience"` are optional. |
+| `"command": "gcloud auth print-access-token"` | A token from a command, such as a cloud CLI. It's fetched again after 5 minutes, or `"ttl"` seconds. |
+| `"value": "{{env.API_KEY}}"` | A fixed token or API key. |
+
+**Optional settings:** `"spec"` (a spec's title) or `"hosts"` (a list of host names) to say which requests it's for; `"apply"` to say where the token goes (`{ "header": "X-Auth-Token" }`, `{ "query": "key" }` or `{ "cookie": "sid" }`); `"token"` and `"expiresIn"` to say where they are in the response (like `"body.data.jwt"`); and `"ttl"` in seconds.
+
+**You stay in control:**
+
+- **A request with its own auth** (an `Authorization` header, or auth set in the request builder) is sent as it is.
+- **Your agent can turn it off** for one request with `auth: false`, to test what happens when signed out.
+- **Every sign-in is in the history,** marked "jodrell signed in", with the password and token masked.
+
+<p align="center"><img src="docs/images/sign-in.png" alt="The Sign-in section of the GUI: the shop profile is signed in with 59 minutes left, and the partner profile needs you because PARTNER_KEY isn't set" width="100%"></p>
+
+**In the GUI,** the **Sign-in** section shows each profile in green when it's signed in, amber when the token is expiring, has expired or was rejected (jodrell signs in again by itself), and red when it needs you, with the reason: a wrong password, or a secret that isn't set. The status bar shows the same at a glance, and the request builder shows which sign-in a request will use. Open a profile to:
+
+- **Sign in again** straight away
+- **Open the sign-in request**, to send it yourself or change what it sends. If it works, jodrell keeps the new token.
+- **Show the last sign-in**, to see exactly what was sent and what came back
+- **Sign out**, so the next request signs in afresh
+
+Your agent can do the same with the `auth_status` and `sign_in` tools.
+
+## Postman collections
+
+Import with `npx jodrell import <file>`, the **Import** button (drag and drop works), or by asking your agent. Collections v2.0 and v2.1 are supported, and so are environment exports.
+
+What comes across:
+
+- folders, and the order of requests
+- methods, URLs, query parameters and `:path` variables
+- headers, including disabled ones
+- raw, URL-encoded, form-data and GraphQL bodies
+- bearer, basic and API key auth, at request, folder and collection level
+- collection variables and descriptions
+
+**Scripts aren't run.** jodrell never executes collection code. Instead, it converts the lines people use most:
+
+- `pm.environment.set("token", pm.response.json().access_token)` (and the `collectionVariables`, `globals` and header variants) becomes a **save from the response** rule
+- `pm.response.to.have.status(201)` and its common variants become an **expected status** check
+
+Anything else is kept, read-only, on the request, and the import tells you how many lines it skipped.
+
+<table>
+<tr>
+<td width="50%" valign="top"><a href="docs/images/import.png"><img src="docs/images/import.png" alt="The Import dialog after importing a Postman collection, listing converted and skipped script lines"></a><br><sub>Importing: what was converted, and what wasn't</sub></td>
+<td width="50%" valign="top"><a href="docs/images/collection-run.png"><img src="docs/images/collection-run.png" alt="Running the imported collection: five requests, all passed, with captured values"></a><br><sub>Running it: the login token flows into later requests</sub></td>
+</tr>
+</table> Not supported yet: file uploads in multipart bodies, binary bodies, OAuth 2, and collection-level scripts. They're flagged on import.
+
 ## Variables, auth and cookies
 
 - **`{{variables}}`** work in URLs, path variables, headers, bodies and auth fields:
@@ -390,7 +386,8 @@ jodrell works best with specs that are accurate and complete: every operation, w
 - **Saving from responses:** values saved after a response go into the active environment, or the collection if no environment is active, as Postman would do.
 - **Cookies are kept per host,** in a named session ("default" in the GUI). A cookie only goes back to the domain that set it.
 - **Captured auth headers** are tied to the host that issued them too, so a token from one API is never sent to another.
-- **Logging in is still a step you (or your agent) take:** call the login endpoint with a capture, and later requests in that session use the token. Getting and refreshing tokens automatically is planned.
+- **For APIs you sign in to often,** an auth profile is simpler than capturing tokens by hand. See [Signing in](#signing-in).
+- **`{{env.NAME}}`** reads from `.env` in your project, or your environment, everywhere `{{variables}}` work.
 
 ## Reference
 
@@ -404,6 +401,7 @@ This is all optional. Put it in `jodrell.config.json`, or under a `"jodrell"` ke
   "specs": [{ "path": "services/billing/openapi.json", "baseUrl": "http://localhost:4000" }],
   "discover": true,
   "guard": "block",
+  "auth": { "shop": { "login": { "op": "login", "body": { "password": "{{env.SHOP_PASS}}" } } } },
   "port": 4545
 }
 ```
@@ -414,6 +412,7 @@ This is all optional. Put it in `jodrell.config.json`, or under a `"jodrell"` ke
 | `specs` | none | Specs to add or pin, as paths, URLs or `{ path, baseUrl }`. Listing specs turns discovery off unless `discover` is `true`. |
 | `discover` | `true` (unless `specs` is set) | Search the project for specs. |
 | `baseUrl` | `appUrl` | The fallback base URL for specs without one. |
+| `auth` | none | How to sign in to each API. See [Signing in](#signing-in). |
 | `guard` | `"block"` | `"block"`, `"ask"` or `"off"`: what the Claude Code guard does with direct API calls. |
 | `port` | `4545` | The GUI port. Another is used automatically if it's taken. |
 
@@ -442,6 +441,7 @@ This is all optional. Put it in `jodrell.config.json`, or under a `"jodrell"` ke
 | `run_request`, `run_collection` | Run saved or imported requests, or a whole collection or folder, with pass/fail per request. Shows a view. |
 | `import_collection`, `list_collections`, `describe_request`, `save_request` | Postman import, browsing collections, and saving a request (or one already made) for you. |
 | `list_environments`, `use_environment`, `set_variable` | Environments and variables. Secret-looking values are masked. |
+| `auth_status`, `sign_in` | See which APIs are signed in, and sign in again now. Requests sign in by themselves, so these are rarely needed. |
 | `set_session`, `list_sessions` | Cookie jars and auth headers, scoped to a host. |
 | `show_history`, `show_request` | Show the timeline or one request in the reply. |
 | `get_history`, `get_call`, `start_run` | Read back earlier requests (long bodies come in pages), and group the next calls under a name. |
@@ -453,6 +453,7 @@ This is all optional. Put it in `jodrell.config.json`, or under a `"jodrell"` ke
 - **Secrets are masked** before they reach the history, the GUI, agent replies or reports. That covers authorisation headers, API keys, anything named like a token or secret, and cookie values in full.
 - **The GUI server** listens on `127.0.0.1` only, and refuses requests from other websites.
 - **Responses never run.** HTML or scripts in an API response are shown as text everywhere, including the report.
+- **Sign-in tokens** are kept in `.jodrell/history.db`, so the GUI and your agent share one sign-in. Passwords and client secrets aren't stored: they're read from `.env` or your environment each time.
 - **Variables are stored as typed,** as in Postman. Keep secrets in environment variables, not in requests, and treat `.jodrell/` like a local `.env` file.
 
 See [SECURITY.md](SECURITY.md) to report a problem.
@@ -476,36 +477,17 @@ The automated tests cover:
 
 What needs a real agent, host, terminal or person is in the end-to-end plan, [`docs/testing/E2E.md`](docs/testing/E2E.md): 127 cases, of which 33 are a smoke test to run before each release. See [`docs/testing/README.md`](docs/testing/README.md) for how the tests are organised.
 
-## Development
-
-```bash
-git clone https://github.com/danneh150/jodrell && cd jodrell
-npm install
-npm test
-npm run demo            # a demo shop API on :4600 (password: secret)
-npm run fake-api        # the test suite's fake API on :4610
-npx jodrell gui          # the GUI, with this folder as the project
-```
-
-The `examples/` folder has a demo spec, a Postman collection and environment, and scripts that act as an agent (`npm run try-agent`).
-
-The code is plain JavaScript (ES modules) with a handful of runtime dependencies: the MCP SDK and MCP Apps, zod, a YAML parser, and Ajv for schema checks. The database is Node's built-in SQLite, and the GUI has no build step. See [CONTRIBUTING.md](CONTRIBUTING.md) for how the code is laid out.
-
-**The icon and banner** are pixel art drawn by code. Change them in `assets/icon-source.py` and `assets/banner.py`, then run them with Python and Pillow to regenerate every size.
-
-**The screenshots** are generated too. `python3 assets/screenshots.py` builds an example project, starts the demo API and the GUI, and photographs every view in `docs/images/`. It needs Python, Pillow and Playwright (`pip install playwright pillow && python -m playwright install chromium`). Run it after changing the GUI, so the README never goes stale.
-
 ## Known limits and plans
 
 **Known limits:**
 
 - **The agent's own requests only.** Requests made by code the agent runs (tests, scripts, your app) aren't captured yet.
 - **Postman gaps:** multipart file uploads, binary bodies, OAuth 2 and collection-level scripts aren't supported.
+- **Sign-in flows that need a browser** (OAuth 2 authorisation code, single sign-on pages) aren't supported. Use a `command` profile with a CLI that prints a token, or capture the token by hand.
 - **The in-reply views** have been tested against the MCP Apps protocol in a test host. Real hosts can differ in details, so please report anything odd.
 
 **Ideas for what's next:**
 
-- **auth described once per API,** so jodrell logs in, adds the token and refreshes it without a separate login call
 - a **recording proxy**, so requests from your app and tests appear in the timeline too
 - **collections as files in the repo**, so a team can share them through git and review changes
 - **exporting** collections back to Postman format
@@ -517,3 +499,7 @@ The code is plain JavaScript (ES modules) with a handful of runtime dependencies
 - **Built on** the [Model Context Protocol](https://modelcontextprotocol.io) SDK and [MCP Apps](https://github.com/modelcontextprotocol/ext-apps). The in-terminal GUI uses [Pixel](https://pixelgui.com).
 - **Licence:** MIT. See [LICENSE](LICENSE).
 - **Not affiliated** with Jodrell Bank Observatory or the University of Manchester. The name is a tribute.
+
+## About the name
+
+It's named after **Jodrell Bank**, the observatory in Cheshire whose giant dish has listened to signals from deep space since 1957. Back then, it was the only telescope in the West that could track the rocket that launched Sputnik 1. jodrell does the same for your agent: everything it sends and receives is picked up and shown to you. The pixel-art icon is a nod to the dish.

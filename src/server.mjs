@@ -34,7 +34,7 @@ export const publicSession = (s) => ({
   updated_at: s.updated_at,
 });
 
-export async function startServer({ store, specs, runner, collections, port, host = "127.0.0.1", fallbackPort = false, project = "", root, refreshSpecs }) {
+export async function startServer({ store, specs, runner, collections, auth, port, host = "127.0.0.1", fallbackPort = false, project = "", root, refreshSpecs }) {
   let uiBase = "";
   let mcp;
   const clients = new Set();
@@ -53,6 +53,7 @@ export async function startServer({ store, specs, runner, collections, port, hos
   store.on("rundone", (r) => broadcast("rundone", r));
   store.on("session", (s) => broadcast("session", s.deleted ? s : publicSession(s)));
   store.on("collections", () => broadcast("collections", {}));
+  store.on("auth", (a) => broadcast("auth", a));
   store.on("environments", () => broadcast("environments", {}));
   store.on("cleared", () => { uiRun = null; broadcast("cleared", {}); });
 
@@ -64,7 +65,7 @@ export async function startServer({ store, specs, runner, collections, port, hos
     }],
     ["GET", /^\/api\/specs$/, () => specs.specs.map(({ source, origin, title, version, kind, baseUrl, operations, warnings, error }) => ({ source: root && !/^https?:/.test(source) ? source.replace(root + "/", "") : source, origin, title, version, kind, baseUrl, operations, warnings, error }))],
     ["POST", /^\/api\/specs\/reload$/, async () => { if (refreshSpecs) await refreshSpecs({ force: true }); else await specs.load(); broadcast("specs", {}); return { ok: true }; }],
-    ["GET", /^\/api\/operations$/, () => specs.list().map((o) => ({ id: o.id, spec: o.spec, method: o.method, path: o.path, summary: o.summary, tags: o.tags, baseUrl: o.baseUrl, params: o.params, requestBody: o.requestBody }))],
+    ["GET", /^\/api\/operations$/, () => specs.list().map((o) => ({ id: o.id, spec: o.spec, method: o.method, path: o.path, summary: o.summary, tags: o.tags, baseUrl: o.baseUrl, params: o.params, requestBody: o.requestBody, security: o.security }))],
     ["GET", /^\/api\/runs$/, () => store.runs()],
     ["GET", /^\/api\/calls$/, (m, b, url) => { const q = Object.fromEntries(url.searchParams); return store.listCalls({ ...q, limit: Number(q.limit) || 500 }); }],
     ["DELETE", /^\/api\/calls$/, () => { store.clearHistory(); return { ok: true }; }],
@@ -114,6 +115,24 @@ export async function startServer({ store, specs, runner, collections, port, hos
       return publicSession(store.saveSession(s));
     }],
     ["DELETE", /^\/api\/sessions\/([^/]+)$/, (m) => { store.deleteSession(decodeURIComponent(m[1])); return { ok: true }; }],
+
+    // Auth profiles from jodrell.config.json: status, sign in now, sign out, and
+    // the sign-in request for trying it by hand.
+    ["GET", /^\/api\/auth$/, () => (auth ? auth.statuses() : [])],
+    ["POST", /^\/api\/auth\/([^/]+)\/signin$/, async (m) => {
+      const name = decodeURIComponent(m[1]);
+      const p = auth?.profile(name);
+      if (!p) throw Object.assign(new Error(`No auth profile called "${name}"`), { status: 404 });
+      try { await auth.ensure(p, runner, { force: true, source: "ui", runId: uiRunId() }); }
+      catch (e) { return { ...auth.status(name), ok: false, error: e.message }; }
+      return { ...auth.status(name), ok: true };
+    }],
+    ["DELETE", /^\/api\/auth\/([^/]+)$/, (m) => { auth?.signOut(decodeURIComponent(m[1])); return { ok: true }; }],
+    ["GET", /^\/api\/auth\/([^/]+)\/request$/, (m) => {
+      const d = auth?.loginDraft(decodeURIComponent(m[1]));
+      if (!d) throw Object.assign(new Error("This profile doesn't sign in with a request"), { status: 404 });
+      return d;
+    }],
   ];
 
   const server = http.createServer(async (req, res) => {
@@ -171,7 +190,7 @@ export async function startServer({ store, specs, runner, collections, port, hos
     actual = await listen(0);
   }
   uiBase = `http://localhost:${actual}`;
-  mcp = createMcpHandler({ store, specs, runner, collections, uiBase: () => uiBase, project, root, refreshSpecs });
+  mcp = createMcpHandler({ store, specs, runner, collections, auth, uiBase: () => uiBase, project, root, refreshSpecs });
 
   // Another process (usually the agent's own jodrell) may write to the same
   // project database. Pick its changes up and push them to open GUIs.
@@ -187,7 +206,7 @@ export async function startServer({ store, specs, runner, collections, port, hos
         const c = store.getCall(row.id);
         broadcast("call", { ...c, req_body: undefined, res_body: undefined });
       }
-      broadcast("collections", {}); broadcast("environments", {}); broadcast("session", {});
+      broadcast("collections", {}); broadcast("environments", {}); broadcast("session", {}); broadcast("auth", {});
     } catch {}
   }, 700);
   poll.unref();

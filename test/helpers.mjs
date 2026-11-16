@@ -62,9 +62,13 @@ export async function waitFor(fn, { timeout = 4000, every = 50, what = "conditio
 //   GET  /html               hostile HTML
 //   GET  /users/:id          {id, name}
 //   GET  /v3/api-docs        an OpenAPI spec (as a framework would serve it)
+//   POST /oauth/token        client credentials (cid / csecret) -> the token
+//   GET  /keyed?key=         needs ?key=<token>
+//   POST /cookie-login       sets only the session cookie
+// rotate() issues a new token, so the old one gets 401 (an expired session).
 export async function fakeApi() {
   const requests = [];
-  const TOKEN = "tok-" + Math.random().toString(36).slice(2, 12);
+  let TOKEN = "tok-" + Math.random().toString(36).slice(2, 12);
   const srv = http.createServer(async (req, res) => {
     const u = new URL(req.url, "http://x");
     let body = "";
@@ -78,6 +82,13 @@ export async function fakeApi() {
       if (b.password !== "secret") return json(401, { error: "Wrong password" });
       return json(200, { access_token: TOKEN, expires_in: 3600, user: { id: "u1" } }, { "set-cookie": `sid=${TOKEN}; HttpOnly; Path=/`, "x-request-id": "req-123" });
     }
+    if (u.pathname === "/oauth/token" && req.method === "POST") {
+      const f = new URLSearchParams(body);
+      if (f.get("grant_type") !== "client_credentials" || f.get("client_id") !== "cid" || f.get("client_secret") !== "csecret") return json(401, { error: "invalid_client", error_description: "Unknown client" });
+      return json(200, { access_token: TOKEN, token_type: "Bearer", expires_in: 600 });
+    }
+    if (u.pathname === "/cookie-login" && req.method === "POST") return json(200, { ok: true }, { "set-cookie": `sid=${TOKEN}; HttpOnly; Path=/` });
+    if (u.pathname === "/keyed") return u.searchParams.get("key") === TOKEN ? json(200, { ok: true }) : json(401, { error: "Bad key" });
     if (u.pathname === "/me") return authed ? json(200, { id: "u1", name: "Ada" }) : json(401, { error: "Log in first" });
     if (u.pathname === "/logout") return json(200, { ok: true }, { "set-cookie": "sid=; Max-Age=0; Path=/" });
     const st = u.pathname.match(/^\/status\/(\d{3})$/);
@@ -94,7 +105,8 @@ export async function fakeApi() {
   });
   await new Promise((r) => srv.listen(0, "127.0.0.1", r));
   const port = srv.address().port;
-  return { url: `http://127.0.0.1:${port}`, localhost: `http://localhost:${port}`, port, token: TOKEN, requests,
+  return { url: `http://127.0.0.1:${port}`, localhost: `http://localhost:${port}`, port, get token() { return TOKEN; }, requests,
+    rotate: () => { TOKEN = "tok-" + Math.random().toString(36).slice(2, 12); return TOKEN; },
     close: () => new Promise((r) => { srv.closeAllConnections?.(); srv.close(() => r()); }) };
 }
 
