@@ -27,6 +27,7 @@ It's named after **Jodrell Bank**, the observatory in Cheshire whose giant dish 
 
 ## Contents
 
+- [Where it came from](#where-it-came-from)
 - [Why jodrell](#why-jodrell)
 - [Features](#features)
 - [How it compares](#how-it-compares)
@@ -45,6 +46,32 @@ It's named after **Jodrell Bank**, the observatory in Cheshire whose giant dish 
 - [Development](#development)
 - [Known limits and plans](#known-limits-and-plans)
 - [Credits and licence](#credits-and-licence)
+
+## Where it came from
+
+jodrell was built to solve three problems.
+
+### 1. Shared Postman collections go out of date
+
+Teams pass Postman collections around, and they drift. An endpoint changes or a field is renamed, but the collection in someone's workspace still has the old version. If a project already has an up-to-date API spec, a hand-made collection is a second copy of the same information, and it's the copy that goes stale.
+
+**jodrell uses the spec instead.** It finds the OpenAPI specs in your project, lets you and your agent call any operation by name, and checks every response against the spec. Collections are still there for saved flows and imported Postman work, but you shouldn't need one just to call your own API.
+
+**This means a good spec is a prerequisite.** jodrell can only be as accurate as the specs it reads, for your own APIs and for the third-party APIs you integrate with. See [Getting a good spec](#getting-a-good-spec) for tools that help.
+
+### 2. Auth gets in the way
+
+Most APIs make you log in or fetch a token before anything else works. In Postman, that means a login request, a script to save the token, and remembering to run it first, and again whenever the token expires.
+
+**What jodrell does today:** log in once (or ask your agent to), save the token into a session, and jodrell sends it with every later request to the same host, and only that host. Cookies work the same way.
+
+**What isn't solved yet:** someone still has to call the login endpoint, and do it again when the token expires. The plan is to describe auth once per API, so jodrell gets and refreshes tokens itself. See [Known limits and plans](#known-limits-and-plans).
+
+### 3. Agents make the calls now, but you still need to see them
+
+AI coding agents can now do most of what we used to do by hand in Postman or Bruno: work out the request, send it, read the response and try again. What we still need, from time to time, is to **see** what happened: to debug a failure, check what the agent actually sent, or look back through the history.
+
+**jodrell records every request** your agent makes, and shows it in the agent's reply, in a GUI, on a timeline and in an HTML report.
 
 ## Why jodrell
 
@@ -335,6 +362,25 @@ Your agent can call operations by name (`call_operation`), and every response, f
 
 <p align="center"><img src="docs/images/specs.png" alt="API specs found in the project: Demo shop, a Swagger 2.0 billing spec, Search, and a broken spec flagged with a warning" width="100%"></p>
 
+### Getting a good spec
+
+jodrell works best with specs that are accurate and complete: every operation, with request and response schemas and error responses. These tools can help. They're examples, not endorsements, so pick what suits your stack.
+
+**Generate the spec from your code,** so it can't drift from what the API really does:
+
+| Stack | Tool |
+| --- | --- |
+| Python | [FastAPI](https://fastapi.tiangolo.com) (built in), [drf-spectacular](https://github.com/tfranzel/drf-spectacular) for Django REST Framework |
+| TypeScript | [@nestjs/swagger](https://github.com/nestjs/swagger), [tsoa](https://github.com/lukeautry/tsoa), [zod-to-openapi](https://github.com/asteasolutions/zod-to-openapi) |
+| Java | [springdoc-openapi](https://springdoc.org) for Spring Boot |
+| .NET | [Microsoft.AspNetCore.OpenApi](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/openapi/overview) |
+
+**Or design it first:** [TypeSpec](https://typespec.io) is a typed language that compiles to OpenAPI, and [Swagger Editor](https://editor.swagger.io) edits OpenAPI files directly.
+
+**Check it:** [Spectral](https://github.com/stoplightio/spectral) and [Redocly CLI](https://redocly.com/docs/cli) lint specs for missing schemas, descriptions and error responses. [oasdiff](https://github.com/oasdiff/oasdiff) catches breaking changes between versions, which is useful in CI.
+
+**Third-party APIs:** many providers publish an OpenAPI spec, and the [APIs.guru directory](https://apis.guru) collects thousands of them. Save a copy in your project, and jodrell picks it up like any other spec.
+
 ## Variables, auth and cookies
 
 - **`{{variables}}`** work in URLs, path variables, headers, bodies and auth fields:
@@ -344,6 +390,7 @@ Your agent can call operations by name (`call_operation`), and every response, f
 - **Saving from responses:** values saved after a response go into the active environment, or the collection if no environment is active, as Postman would do.
 - **Cookies are kept per host,** in a named session ("default" in the GUI). A cookie only goes back to the domain that set it.
 - **Captured auth headers** are tied to the host that issued them too, so a token from one API is never sent to another.
+- **Logging in is still a step you (or your agent) take:** call the login endpoint with a capture, and later requests in that session use the token. Getting and refreshing tokens automatically is planned.
 
 ## Reference
 
@@ -458,6 +505,7 @@ The code is plain JavaScript (ES modules) with a handful of runtime dependencies
 
 **Ideas for what's next:**
 
+- **auth described once per API,** so jodrell logs in, adds the token and refreshes it without a separate login call
 - a **recording proxy**, so requests from your app and tests appear in the timeline too
 - **collections as files in the repo**, so a team can share them through git and review changes
 - **exporting** collections back to Postman format
