@@ -1,14 +1,28 @@
 // Secret masking and response validation against OpenAPI schemas.
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { mask, redactHeaders, isSecretHeader, validateResponse, clearValidationCache } from "../../src/checks.mjs";
+import { mask, redactHeaders, redactUrl, isSecretHeader, validateResponse, clearValidationCache } from "../../src/checks.mjs";
 
 describe("masking secrets", () => {
   test("short values are hidden entirely, long ones keep a hint", () => {
     assert.equal(mask("abc"), "••••");
     assert.equal(mask(""), "••••");
-    const m = mask("Bearer abcdefghijkl1234");
-    assert.ok(m.startsWith("Bearer ") && m.endsWith("1234") && !m.includes("abcdefghijkl"));
+    assert.equal(mask("hunter2pw"), "••••", "no part of a short password");
+    assert.equal(mask("Summer2024!Summer2024!x"), "••••");
+    assert.equal(mask("Bearer abcdefghijkl1234"), "Bearer ••••");
+    const m = mask("Bearer abcdefghijklmnopqrstuvwxyz1234");
+    assert.ok(m.startsWith("Bearer abc") && m.endsWith("1234") && !m.includes("defghijkl"));
+    assert.equal(mask("Basic YWRtaW46Q29ycmVjdEhvcnNlQmF0dGVyeVN0YXBsZQ=="), "Basic ••••", "no part of a Basic credential");
+  });
+  test("more secret header names, but not challenge headers", () => {
+    for (const n of ["x-authorization", "apikey", "x-goog-api-key", "ocp-apim-subscription-key", "x-auth-key", "x-functions-key", "x-amz-signature"]) assert.ok(isSecretHeader(n), n);
+    for (const n of ["www-authenticate", "keep-alive", "content-type", "x-request-id", "accept"]) assert.ok(!isSecretHeader(n), n);
+  });
+  test("secrets in URLs are masked", () => {
+    const u = redactUrl("https://user:pw@api.test/x?api_key=QUERY-SECRET-123456&page=2&access_token=t0k3n");
+    assert.ok(!u.includes("QUERY-SECRET") && !u.includes("t0k3n") && !u.includes("pw@"), u);
+    assert.match(u, /page=2/);
+    assert.equal(redactUrl("https://api.test/x?page=2"), "https://api.test/x?page=2");
   });
   test("secret-looking headers are masked, others are kept", () => {
     const h = redactHeaders({ Authorization: "Bearer abcdefghijkl1234", Cookie: "sid=abcdefghijkl", "set-cookie": ["a=1234567890123", "b=1234567890456"], "X-API-Key": "k-1234567890", "x-auth-token": "zzzzzzzzzzzz9999", "X-Session-Id": "s-123456789", "content-type": "application/json", Accept: "*/*" });

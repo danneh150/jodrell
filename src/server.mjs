@@ -127,6 +127,11 @@ export async function startServer({ store, specs, runner, collections, auth, por
       catch (e) { return { ...auth.status(name), ok: false, error: e.message }; }
       return { ...auth.status(name), ok: true };
     }],
+    ["POST", /^\/api\/auth\/([^/]+)\/trust$/, (m) => {
+      const name = decodeURIComponent(m[1]);
+      if (!auth?.profile(name)) throw Object.assign(new Error(`No auth profile called "${name}"`), { status: 404 });
+      return auth.trust(name);
+    }],
     ["DELETE", /^\/api\/auth\/([^/]+)$/, (m) => { auth?.signOut(decodeURIComponent(m[1])); return { ok: true }; }],
     ["GET", /^\/api\/auth\/([^/]+)\/request$/, (m) => {
       const d = auth?.loginDraft(decodeURIComponent(m[1]));

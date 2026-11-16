@@ -59,6 +59,7 @@ ${bold("Commands")}
   jodrell import <file>  Import a Postman collection or environment (file or URL)
   jodrell watch          Stream requests into this terminal as they happen          --detail for bodies
   jodrell show <n>       Print request n in full
+  jodrell trust [name]   Allow this project's sign-in settings ("auth" in jodrell.config.json). No name: list them
   jodrell open           Show the GUI in this terminal pane (Pixel)
   jodrell mcp            Run as an MCP server over stdio (what your agent starts)
   jodrell init           Set up the current project (--no-guard, --no-rules to skip parts)
@@ -325,8 +326,27 @@ async function open() {
   spawn(cmd0, rest, { stdio: "inherit" }).on("exit", (code) => process.exit(code ?? 0));
 }
 
+// A project's auth profiles can send secrets and run commands, so each one is
+// only used once you allow it here or in the GUI. Approvals are stored outside
+// the project (see trustFile in src/auth.mjs), keyed to the exact settings.
+async function trust() {
+  const c = await core();
+  const name = args._[1];
+  const all = c.auth.statuses();
+  if (!all.length) return console.log('No auth profiles. Add "auth" to jodrell.config.json to have jodrell sign in for you.');
+  if (!name) {
+    for (const a of all) console.log(`${a.state === "untrusted" ? yellow("Not allowed yet") : green("Allowed")}  ${bold(safe(a.name))}: it ${safe(c.auth.describe(c.auth.profile(a.name)))}.`);
+    if (all.some((a) => a.state === "untrusted")) console.log(dim("\nTo allow one: npx jodrell trust <name>"));
+    return;
+  }
+  const p = c.auth.profile(name);
+  if (!p) { console.error(red(`No auth profile called "${safe(name)}".`)); process.exit(1); }
+  c.auth.trust(name);
+  console.log(green(`Allowed "${safe(name)}".`) + ` It ${safe(c.auth.describe(p))}.\n` + dim("If its settings change, jodrell will ask again."));
+}
+
 const guard = async () => { await import("./guard.mjs"); };
-const commands = { guard, gui, dev: gui, report, import: importCmd, watch, show, open, mcp, init, help: () => console.log(HELP),
+const commands = { guard, gui, dev: gui, report, import: importCmd, watch, show, open, mcp, init, trust, help: () => console.log(HELP),
   "mcp-config": () => console.log(`Command for any MCP client (stdio):  npx jodrell mcp\nClaude Code:  claude mcp add jodrell -- npx jodrell mcp\nOr run "npx jodrell init" to write .mcp.json for this project.`) };
 if (args.help || args.h) console.log(HELP);
 else if (!commands[cmd]) { console.error(`Unknown command "${cmd}".\n${HELP}`); process.exit(1); }

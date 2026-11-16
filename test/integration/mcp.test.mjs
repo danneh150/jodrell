@@ -41,6 +41,7 @@ describe("signing in", () => {
     assert.match(r.text, /^No auth profiles/);
     fs.writeFileSync(cfg, JSON.stringify({ auth: { fake: { login: { url: `${api.url}/login`, body: { password: "{{env.FAKE_PASS}}" } }, hosts: ["127.0.0.1"] } } }));
     fs.writeFileSync(`${core.root}/.env`, "FAKE_PASS=secret");
+    core.auth.trust("fake");
     try {
       r = await call("auth_status");
       assert.match(r.text, /^fake \(none\): Not signed in yet/);
@@ -88,7 +89,7 @@ describe("making requests", () => {
     assert.match((await call("send_request", { url: `${api.url}/me`, session: "agent" })).text, /HTTP 200/);
     assert.match((await call("list_sessions")).text, /agent: headers \{Authorization: Bearer ••••.*\(127\.0\.0\.1 only\)\}/);
     await call("set_session", { name: "manual", headers: { "X-Key": "abcdefghijk123" }, host: "api.example.com" });
-    assert.match((await call("list_sessions")).text, /manual: headers \{X-Key: abc••••k123 \(api\.example\.com only\)\}/);
+    assert.match((await call("list_sessions")).text, /manual: headers \{X-Key: •••• \(api\.example\.com only\)\}/);
   });
 });
 
@@ -119,7 +120,7 @@ describe("collections and environments", () => {
     assert.match((await call("save_request", { collection: "Agent finds", name: "Plain", url: `${api.url}/echo`, method: "POST", body: { a: 1 } })).text, /Saved as/);
     assert.match((await call("set_variable", { name: "apiToken", value: "abcdefghijklmnop" })).text, /environment "Demo local"/);
     const envs = (await call("list_environments")).text;
-    assert.match(envs, /● Demo local/); assert.match(envs, /apiToken=abc••••mnop/); assert.ok(!envs.includes("abcdefghijklmnop"));
+    assert.match(envs, /● Demo local/); assert.match(envs, /apiToken=••••/); assert.ok(!envs.includes("abcdefghijklmnop"));
   });
 });
 

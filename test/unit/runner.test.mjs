@@ -37,6 +37,23 @@ describe("sending", () => {
     await assert.rejects(runner.send({ method: "GET;echo hi;", url: `${api.url}/echo` }), /isn't a valid HTTP method/);
     assert.equal(store.listCalls({}).length, 0);
   });
+  test("history keeps no secrets from URLs or bodies, but replay still sends the real ones", async () => {
+    const { runner, store } = await makeCore();
+    const c = await runner.send({ method: "POST", url: `${api.url}/echo?api_key=QUERY-SECRET-123456`, body: { user: "ada", password: "PlainPassword123" } });
+    const saved = store.getCall(c.id);
+    assert.ok(!saved.url.includes("QUERY-SECRET")); assert.ok(!saved.req_body.includes("PlainPassword123")); assert.match(saved.req_body, /"user":"ada"/);
+    const r = await runner.replay(c.id);
+    const sent = JSON.parse(r.res_body);
+    assert.equal(sent.query.api_key, "QUERY-SECRET-123456"); assert.match(sent.body, /PlainPassword123/);
+  });
+  test("replay never sends a request's secret headers to a different host", async () => {
+    const { runner } = await makeCore();
+    const c = await runner.send({ method: "GET", url: `${api.url}/echo`, headers: { "X-Token": "host-a-secret-value" } });
+    const other = await runner.replay(c.id, { url: `${api.localhost}/echo` });
+    assert.equal(JSON.parse(other.res_body).headers["x-token"], undefined);
+    const same = await runner.replay(c.id);
+    assert.equal(JSON.parse(same.res_body).headers["x-token"], "host-a-secret-value");
+  });
   test("explains failures in plain words", async () => {
     const { runner } = await makeCore();
     const port = await closedPort();

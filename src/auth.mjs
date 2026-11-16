@@ -16,7 +16,9 @@
 // "apply" ({ "header", "prefix" } | { "query" } | { "cookie" }), "expiresIn"
 // (a response path, in seconds) and "ttl" (seconds).
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { exec } from "node:child_process";
 import { mask } from "./checks.mjs";
 
@@ -25,10 +27,38 @@ const SOON_MS = 2 * 60_000;        // "expires soon" in the GUI
 const COMMAND_TTL_S = 300;         // tokens from a command are fetched again after this long
 const TOKEN_PATHS = ["body.access_token", "body.accessToken", "body.token", "body.id_token", "body.jwt", "body.data.token", "body.data.access_token", "body.data.accessToken"];
 
+// Config copied onto objects with no prototype, so nothing inherited (or
+// polluted) can ever be read as a setting like "command".
+function plain(v) {
+  if (Array.isArray(v)) return v.map(plain);
+  if (!v || typeof v !== "object") return v;
+  return Object.setPrototypeOf(Object.fromEntries(Object.entries(v).map(([k, x]) => [k, plain(x)])), null);
+}
+const stable = (v) => (Array.isArray(v) ? `[${v.map(stable).join(",")}]` : v && typeof v === "object" ? `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${stable(v[k])}`).join(",")}}` : JSON.stringify(v));
+const shellQuote = (v) => (process.platform === "win32" ? `"${String(v).replace(/"/g, '""')}"` : `'${String(v).replace(/'/g, "'\\''")}'`);
+const ENV_REF = /\{\{\s*env\.([\w.-]+)\s*\}\}/g;
+
+// Approvals live outside the project, so a cloned repository can't approve itself.
+export function trustFile() {
+  if (process.env.JODRELL_HOME) return path.join(process.env.JODRELL_HOME, "trust.json");
+  const base = process.platform === "win32" ? process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming") : process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
+  return path.join(base, "jodrell", "trust.json");
+}
+
 const get = (obj, p) => p.split(".").reduce((o, k) => (o == null ? undefined : o[k]), obj);
 const hostOf = (url) => { try { return new URL(url).hostname.toLowerCase(); } catch { return ""; } };
 const domainMatch = (host, domain) => host === domain || host.endsWith("." + domain);
 const isAbs = (u) => /^https?:\/\//i.test(u || "");
+// Same scheme, host and port, and a path at or under the base path (on a "/"
+// boundary): http://api.test isn't a prefix of http://api.test.evil.example.
+const underBase = (url, base) => {
+  try {
+    const u = new URL(url), b = new URL(base);
+    if (u.origin !== b.origin) return false;
+    const bp = b.pathname.replace(/\/$/, "");
+    return !bp || u.pathname === bp || u.pathname.startsWith(bp + "/");
+  } catch { return false; }
+};
 const sameUrl = (a, b) => { try { const x = new URL(a), y = new URL(b); return x.origin === y.origin && x.pathname.replace(/\/$/, "") === y.pathname.replace(/\/$/, ""); } catch { return false; } };
 
 // .env in the project root: KEY=value lines. The real environment wins.
@@ -57,16 +87,17 @@ function jwtExpiry(token) {
 
 // Variables in sign-in details: {{env.NAME}} (environment and .env) and the
 // active environment's own variables.
-// used collects the {{env.*}} values filled in, so they can be masked in history.
-function fillTemplate(value, vars, missing, used = []) {
+// used collects the {{env.*}} values filled in, so they can be masked in
+// history. wrap, if given, quotes each value (for shell commands).
+function fillTemplate(value, vars, missing, used = [], wrap = (x) => x) {
   if (typeof value === "string") {
     return value.replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (m, k) => {
-      if (vars[k] !== undefined && vars[k] !== null) { if (k.startsWith("env.")) used.push(String(vars[k])); return String(vars[k]); }
+      if (Object.hasOwn(vars, k) && vars[k] !== undefined && vars[k] !== null) { if (k.startsWith("env.")) used.push(String(vars[k])); return wrap(String(vars[k])); }
       missing.add(k); return m;
     });
   }
-  if (Array.isArray(value)) return value.map((v) => fillTemplate(v, vars, missing, used));
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, fillTemplate(v, vars, missing, used)]));
+  if (Array.isArray(value)) return value.map((v) => fillTemplate(v, vars, missing, used, wrap));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, fillTemplate(v, vars, missing, used, wrap)]));
   return value;
 }
 
@@ -86,7 +117,7 @@ export class Auth {
 
   /* ---- profiles ---- */
 
-  raw() { const a = this.config()?.auth; return a && typeof a === "object" ? a : {}; }
+  raw() { const a = this.config()?.auth; return a && typeof a === "object" && !Array.isArray(a) ? plain(a) : Object.create(null); }
   names() { return Object.keys(this.raw()); }
 
   profile(name) {
@@ -99,14 +130,54 @@ export class Auth {
     if (raw.login?.op && !loginOp) p.problems.push(`The login operation "${raw.login.op}" isn't in any spec.`);
     const loaded = this.specs.specs.filter((s) => !s.error);
     p.spec = raw.spec || loginOp?.spec || (!raw.hosts && loaded.length === 1 ? loaded[0].title : undefined);
-    p.specEntry = p.spec ? loaded.find((s) => s.title === p.spec) : null;
-    if (raw.spec && !p.specEntry) p.problems.push(`No loaded spec is called "${raw.spec}".`);
+    const named = p.spec ? loaded.filter((s) => s.title === p.spec) : [];
+    p.specEntry = loginOp ? loaded.find((s) => s.source === loginOp.specSource) || named[0] : named[0] || null;
+    if (raw.spec && !named.length) p.problems.push(`No loaded spec is called "${raw.spec}".`);
+    else if (named.length > 1 && !loginOp) p.problems.push(`Several specs are called "${p.spec}", so it's not clear which one this is for. Give "hosts" instead.`);
     p.hosts = [].concat(raw.hosts || []).map((h) => String(h).toLowerCase());
+    const broad = p.hosts.filter((h) => !h.includes(".") && h !== "localhost");
+    if (broad.length) p.problems.push(`"hosts" needs full host names, like api.example.com: "${broad[0]}" would match every site under it.`);
     if (!p.hosts.length && !p.specEntry && kind === "login" && isAbs(raw.login.url)) p.hosts = [hostOf(raw.login.url)];
     if (!p.hosts.length && !p.specEntry) p.problems.push(`Say which API this is for: add "spec" (a spec's title) or "hosts".`);
     p.apply = this.placement(p);
+    p.trusted = this.isTrusted(p);
     return p;
   }
+
+  /* ---- approval: a project's sign-in settings are only used once you allow them ---- */
+
+  fingerprint(p) {
+    let root = this.root; try { root = fs.realpathSync(root); } catch {}
+    return crypto.createHash("sha256").update(stable({ root, name: p.name, raw: p.raw })).digest("hex");
+  }
+  readTrust() { try { const t = JSON.parse(fs.readFileSync(trustFile(), "utf8")); return Array.isArray(t.allowed) ? t.allowed : []; } catch { return []; } }
+  isTrusted(p) { return this.readTrust().includes(this.fingerprint(p)); }
+  trust(name) {
+    const p = this.profile(name);
+    if (!p) throw new Error(`No auth profile called "${name}"`);
+    const list = this.readTrust();
+    const fp = this.fingerprint(p);
+    if (!list.includes(fp)) {
+      fs.mkdirSync(path.dirname(trustFile()), { recursive: true });
+      fs.writeFileSync(trustFile(), JSON.stringify({ allowed: [...list, fp] }, null, 2), { mode: 0o600 });
+    }
+    this.store.emit("auth", { name });
+    return this.status(name);
+  }
+  // What a profile will do, in words, so you can decide whether to allow it.
+  describe(p) {
+    const t = p.kind ? this.loginTemplate(p) : null;
+    const env = [...new Set([...JSON.stringify(p.raw).matchAll(ENV_REF)].map((m) => m[1]))];
+    const parts = [];
+    if (p.kind === "command") parts.push(`runs this command on your computer: ${p.raw.command}`);
+    else if (t) parts.push(`sends a sign-in request to ${t.method} ${t.url}`);
+    else if (p.kind === "static") parts.push("uses a fixed token");
+    if (env.length) parts.push(`using ${env.join(", ")} from .env or your environment`);
+    parts.push(`and adds the token to requests for ${[p.specEntry && `${p.specEntry.title}${p.specEntry.baseUrl ? ` (${p.specEntry.baseUrl})` : ""}`, ...p.hosts].filter(Boolean).join(", ") || "nothing yet"}`);
+    return parts.join(", ");
+  }
+  // The {{env.*}} names a profile itself uses: only these go into its sign-in request.
+  envNames(p) { return [...new Set([...JSON.stringify(p.raw).matchAll(ENV_REF)].map((m) => `env.${m[1]}`))]; }
 
   profiles() { return this.names().map((n) => this.profile(n)); }
 
@@ -164,8 +235,8 @@ export class Auth {
       if (!p.kind || this.isLogin(p, method, url)) continue;
       if (p.hosts.length && p.hosts.some((h) => domainMatch(host, h))) return p;
       if (p.specEntry) {
-        if (op && op.spec === p.specEntry.title) return p;
-        if (!op && p.specEntry.baseUrl && url.toLowerCase().startsWith(p.specEntry.baseUrl.toLowerCase())) return p;
+        if (op && op.specSource === p.specEntry.source) return p;
+        if (!op && p.specEntry.baseUrl && underBase(url, p.specEntry.baseUrl)) return p;
       }
     }
     return null;
@@ -193,6 +264,21 @@ export class Auth {
     this.store.saveAuthState({ ...st, token: undefined, cookies: undefined, rejectedAt: new Date().toISOString(), rejectedStatus: status });
   }
 
+  // Where the token is in a sign-in response: the profile's "token" path, the
+  // usual places, or the session cookies it set. Also used to keep it out of history.
+  extractToken(p, ctx, setCookies = []) {
+    const tokenPath = p.raw.token || (p.kind === "clientCredentials" ? "body.access_token" : null);
+    let token = tokenPath ? get(ctx, tokenPath) : TOKEN_PATHS.map((x) => get(ctx, x)).find((v) => typeof v === "string" && v);
+    let cookies;
+    if ((token === undefined || token === null || token === "") && setCookies.length && !p.raw.token) {
+      cookies = {};
+      for (const line of setCookies) { const pair = line.split(";")[0]; const eq = pair.indexOf("="); if (eq > 0 && pair.slice(eq + 1).trim()) cookies[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim(); }
+      token = undefined;
+    }
+    if (token !== undefined && token !== null && typeof token !== "string") token = String(token);
+    return { token, cookies };
+  }
+
   // Read the token from a sign-in response. Returns a short description.
   acceptLogin(p, { ctx, setCookies = [], host, callId }) {
     const now = new Date().toISOString();
@@ -205,13 +291,7 @@ export class Auth {
       return { ok: false, error };
     }
     const tokenPath = p.raw.token || (p.kind === "clientCredentials" ? "body.access_token" : null);
-    let token = tokenPath ? get(ctx, tokenPath) : TOKEN_PATHS.map((x) => get(ctx, x)).find((v) => typeof v === "string" && v);
-    let cookies;
-    if ((token === undefined || token === null || token === "") && setCookies.length && !p.raw.token) {
-      cookies = {};
-      for (const line of setCookies) { const pair = line.split(";")[0]; const eq = pair.indexOf("="); if (eq > 0 && pair.slice(eq + 1).trim()) cookies[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim(); }
-      token = undefined;
-    }
+    let { token, cookies } = this.extractToken(p, ctx, setCookies);
     if ((token === undefined || token === null || token === "") && !(cookies && Object.keys(cookies).length)) {
       const error = `Signed in (HTTP ${ctx.status}), but couldn't find a token in the response${tokenPath ? ` at "${tokenPath}"` : ""}. Set "token" in the auth profile to where it is, like "body.access_token".`;
       this.store.saveAuthState({ ...base, token: undefined, cookies: undefined, error });
@@ -225,7 +305,10 @@ export class Auth {
 
   // Make sure a profile has a usable token, signing in if needed.
   // runner sends the sign-in request, so it's recorded like any other.
-  async ensure(p, runner, { force = false, source, runId } = {}) {
+  async ensure(p, runner, opts = {}) {
+    const force = Object.hasOwn(opts, "force") && opts.force === true;
+    const { source, runId } = opts;
+    if (!p.trusted) throw new Error(`"${p.name}" hasn't been allowed yet. Open it in jodrell's GUI (Sign-in) and choose Allow, or run npx jodrell trust ${p.name}. It ${this.describe(p)}.`);
     if (!force) { const st = this.state(p.name); if (this.fresh(st)) return { st, signedIn: false }; }
     if (this.pending.has(p.name)) return this.pending.get(p.name);
     const job = this.signIn(p, runner, { source, runId }).finally(() => this.pending.delete(p.name));
@@ -235,6 +318,7 @@ export class Auth {
 
   async signIn(p, runner, { source = "agent", runId } = {}) {
     if (p.problems.length) throw new Error(p.problems[0]);
+    if (!p.trusted) throw new Error(`"${p.name}" hasn't been allowed yet. Open it in jodrell's GUI (Sign-in) and choose Allow, or run npx jodrell trust ${p.name}. It ${this.describe(p)}.`);
     const vars = { ...(runner?.envVars?.() || {}), ...this.env() };
     const missing = new Set();
     const now = new Date().toISOString();
@@ -248,7 +332,8 @@ export class Auth {
       return { st, signedIn: true };
     }
     if (p.kind === "command") {
-      const cmd = fillTemplate(String(p.raw.command), vars, missing);
+      // Only {{env.*}} goes into a command, quoted, so no value can add shell syntax.
+      const cmd = fillTemplate(String(p.raw.command), this.env(), missing, [], shellQuote);
       if (missing.size) fail(missingMsg());
       let out;
       try {
@@ -291,7 +376,7 @@ export class Auth {
     if (a.in === "header") { if (has(a.name)) return { url, applied: false }; headers[a.name] = value; return { url, applied: true, header: a.name }; }
     if (a.in === "cookie") {
       const existing = has("cookie");
-      if (existing && new RegExp(`(^|;\\s*)${a.name}=`).test(headers[existing])) return { url, applied: false };
+      if (existing && new RegExp(`(^|;\\s*)${a.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}=`).test(headers[existing])) return { url, applied: false };
       if (existing) headers[existing] += `; ${a.name}=${st.token}`; else headers.cookie = `${a.name}=${st.token}`;
       return { url, applied: true };
     }
@@ -315,6 +400,7 @@ export class Auth {
     const exp = st.expiresAt ? Date.parse(st.expiresAt) : null;
     let state, message;
     if (p.problems.length) { state = "misconfigured"; message = p.problems[0]; }
+    else if (!p.trusted) { state = "untrusted"; message = `Waiting for you to allow it. It ${this.describe(p)}. A project's settings could send your secrets anywhere or run commands, so jodrell asks once, and again if they change.`; }
     else if (this.hasToken(st) && exp && exp - MARGIN_MS <= now) { state = "expired"; message = "The token has expired. jodrell signs in again on the next request."; }
     else if (this.hasToken(st) && exp && exp - SOON_MS <= now) { state = "expiring"; message = "Signed in. The token expires soon, and jodrell will sign in again when it does."; }
     else if (this.hasToken(st)) { state = "valid"; message = exp ? "jodrell adds this token to requests for this API, and signs in again before it expires." : "jodrell adds this token to requests for this API. The API didn't say when it expires, so jodrell signs in again if it's rejected."; }
@@ -325,7 +411,7 @@ export class Auth {
     const where = p.apply.in === "header" ? `${p.apply.name} header${p.apply.prefix ? ` (${p.apply.prefix.trim()})` : ""}` : p.apply.in === "query" ? `${p.apply.name} query parameter` : `${p.apply.name} cookie`;
     return {
       name, kind: p.kind, state, message,
-      needsAction: state === "failed" || state === "misconfigured",
+      needsAction: state === "failed" || state === "misconfigured" || state === "untrusted",
       how: { login: "a sign-in request", clientCredentials: "OAuth 2 client credentials", command: "a command", static: "a fixed token" }[p.kind] || "not set",
       spec: p.specEntry?.title || null, baseUrl: p.specEntry?.baseUrl || null, hosts: p.hosts,
       placement: st.cookies ? "cookies from the sign-in response" : where,

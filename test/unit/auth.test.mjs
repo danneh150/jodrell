@@ -17,12 +17,14 @@ const shopSpec = (extra = {}) => oas("Shop", {
   "/echo/private": { get: { operationId: "privateEcho", responses: ok } },
 }, { servers: [{ url: api.url }], components: { securitySchemes: { bearer: { type: "http", scheme: "bearer" } } }, security: [{ bearer: [] }], ...extra });
 
-// A project with the shop spec and the given auth profiles.
-const project = (auth, files = {}) => makeCore({
+// Allow every profile, as you would in the GUI or with npx jodrell trust.
+const allowAll = (core) => { for (const n of core.auth.names()) if (!core.auth.status(n).problems) core.auth.trust(n); return core; };
+// A project with the shop spec and the given auth profiles, allowed.
+const project = async (auth, files = {}) => allowAll(await makeCore({
   "openapi.json": shopSpec(),
   "jodrell.config.json": { specs: ["openapi.json"], auth },
   ...files,
-});
+}));
 const loginProfile = { shop: { login: { op: "login", body: { password: "{{env.SHOP_PASS}}" } } } };
 const logins = () => api.requests.filter((r) => r.path === "/login").length;
 
@@ -140,10 +142,21 @@ describe("secrets from .env stay in sign-in requests", () => {
   });
 });
 
+describe("sign-in responses", () => {
+  test("the token is masked in history whatever it's called", async () => {
+    // /echo replies with the path, so the "token" is in a field called "path".
+    const { runner, store, auth } = await project({ shop: { login: { url: "/echo/handle-abcdef123456" }, token: "body.path" } });
+    await runner.send({ ...runner.fromOperation("me") });
+    const login = store.getCall(auth.status("shop").loginCallId);
+    assert.ok(auth.status("shop").loginCallId, "it signed in");
+    assert.ok(!login.res_body.includes("handle-abcdef123456"), login.res_body);
+  });
+});
+
 describe("other ways to sign in", () => {
   test("OAuth 2 client credentials, with the token URL from the spec", async () => {
     const spec = shopSpec({ components: { securitySchemes: { oauth: { type: "oauth2", flows: { clientCredentials: { tokenUrl: `${api.url}/oauth/token`, scopes: {} } } } } } });
-    const { runner, auth } = await makeCore({ "openapi.json": spec, "jodrell.config.json": { specs: ["openapi.json"], auth: { shop: { clientCredentials: { clientId: "{{env.CID}}", clientSecret: "{{env.CSECRET}}" } } } }, ".env": "CID=cid\nCSECRET=csecret" });
+    const { runner, auth } = allowAll(await makeCore({ "openapi.json": spec, "jodrell.config.json": { specs: ["openapi.json"], auth: { shop: { clientCredentials: { clientId: "{{env.CID}}", clientSecret: "{{env.CSECRET}}" } } } }, ".env": "CID=cid\nCSECRET=csecret" }));
     const c = await runner.send({ ...runner.fromOperation("me") });
     assert.equal(c.status, 200);
     assert.equal(auth.status("shop").how, "OAuth 2 client credentials");
@@ -151,7 +164,7 @@ describe("other ways to sign in", () => {
 
   test("an API key in the query string, as the spec says, masked in the history", async () => {
     const spec = oas("Keyed", { "/keyed": { get: { operationId: "keyed", responses: ok } } }, { servers: [{ url: api.url }], components: { securitySchemes: { k: { type: "apiKey", in: "query", name: "key" } } } });
-    const { runner, store } = await makeCore({ "openapi.json": spec, "jodrell.config.json": { specs: ["openapi.json"], auth: { keyed: { command: `echo ${api.token}` } } } });
+    const { runner, store } = allowAll(await makeCore({ "openapi.json": spec, "jodrell.config.json": { specs: ["openapi.json"], auth: { keyed: { command: `echo ${api.token}` } } } }));
     const c = await runner.send({ ...runner.fromOperation("keyed") });
     assert.equal(c.status, 200);
     assert.ok(!store.getCall(c.id).url.includes(api.token));
@@ -182,6 +195,66 @@ describe("other ways to sign in", () => {
     const st = auth.status("shop");
     assert.equal(st.state, "failed"); assert.equal(st.needsAction, true);
     assert.match(st.message, /^JODRELL_TEST_UNSET isn't set/);
+  });
+});
+
+describe("a project's sign-in settings need your approval", () => {
+  test("nothing is sent or run until you allow it, and changes need allowing again", async () => {
+    const core = await makeCore({ "openapi.json": shopSpec(), "jodrell.config.json": { specs: ["openapi.json"], auth: loginProfile }, ".env": "SHOP_PASS=secret" });
+    const before = logins();
+    let st = core.auth.status("shop");
+    assert.equal(st.state, "untrusted"); assert.equal(st.needsAction, true);
+    assert.match(st.message, /sends a sign-in request to POST http:\/\/127\.0\.0\.1:\d+\/login, using SHOP_PASS/);
+    const c = await core.runner.send({ ...core.runner.fromOperation("me") });
+    assert.match(c.error, /hasn't been allowed yet/);
+    assert.equal(logins(), before, "no sign-in request was sent");
+    core.auth.trust("shop");
+    assert.equal((await core.runner.send({ ...core.runner.fromOperation("me") })).status, 200);
+    // The same project with a different command: asked again.
+    const fsx = await import("node:fs");
+    fsx.writeFileSync(`${core.root}/jodrell.config.json`, JSON.stringify({ specs: ["openapi.json"], auth: { shop: { ...loginProfile.shop, hosts: ["127.0.0.1"] } } }));
+    assert.equal(core.auth.status("shop").state, "untrusted");
+  });
+
+  test("a command never runs before it's allowed, and values can't add shell syntax", async () => {
+    const fsx = await import("node:fs");
+    const core = await makeCore({ "openapi.json": shopSpec(), "jodrell.config.json": { specs: ["openapi.json"], auth: { shop: { command: "echo {{env.JT_VAL}} > out.txt" } } }, ".env": "JT_VAL=x; touch pwned" });
+    await core.runner.send({ ...core.runner.fromOperation("me") });
+    assert.ok(!fsx.existsSync(`${core.root}/out.txt`), "not run before approval");
+    core.auth.trust("shop");
+    await core.runner.send({ ...core.runner.fromOperation("me") });
+    assert.equal(fsx.readFileSync(`${core.root}/out.txt`, "utf8").trim(), "x; touch pwned");
+    assert.ok(!fsx.existsSync(`${core.root}/pwned`), "the value stayed one argument");
+  });
+});
+
+describe("tokens only go where they belong", () => {
+  test("lookalike hosts and ports don't match the spec's base URL", async () => {
+    const { runner } = await project({ shop: { value: "TOKEN-123456789" } });
+    const echo = (c) => JSON.parse(c.res_body);
+    const port = new URL(api.url).port;
+    for (const url of [`http://127.0.0.1:${port}0/x`, `http://localhost:${port}/echo`]) {
+      const c = await runner.send({ method: "GET", url, auth: true });
+      assert.ok(!Object.keys(c.req_headers || {}).some((k) => /^authorization$/i.test(k)), `no token for ${url}`);
+    }
+    const ok = await runner.send({ method: "GET", url: `${api.url}/echo/x` });
+    assert.equal(echo(ok).headers.authorization, "Bearer TOKEN-123456789");
+  });
+  test("bare top-level domains aren't accepted as hosts", async () => {
+    const { auth } = await project({ x: { value: "t", hosts: ["com"] } });
+    assert.match(auth.status("x").message, /"com" would match every site/);
+  });
+  test("a cookie can't pollute objects, and can't be planted for other hosts", async () => {
+    const http = await import("node:http");
+    const srv = http.createServer((req, res) => { res.writeHead(200, { "set-cookie": ["command=id; Domain=__proto__", "force=1; Domain=constructor", "fixed=1; Domain=127.0.0.2", "ok=1"] }); res.end("{}"); });
+    await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+    try {
+      const { runner, store } = await makeCore();
+      await runner.send({ method: "GET", url: `http://127.0.0.1:${srv.address().port}/`, session: "s" });
+      assert.equal(({}).command, undefined); assert.equal(({}).force, undefined);
+      const jar = store.getSession("s").cookies;
+      assert.deepEqual(Object.keys(jar), ["127.0.0.1"]);
+    } finally { srv.close(); }
   });
 });
 

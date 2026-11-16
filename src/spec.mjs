@@ -93,7 +93,7 @@ function slug(method, p) {
   return (method + p.replace(/\{([^}]+)\}/g, "by_$1")).replace(/[^a-zA-Z0-9]+/g, "_").replace(/_+$/, "");
 }
 
-function buildOps(doc, specName, baseUrl) {
+function buildOps(doc, specName, baseUrl, specSource) {
   const ops = [];
   for (const [p, item] of Object.entries(doc.paths || {})) {
     const shared = item.parameters || [];
@@ -103,7 +103,7 @@ function buildOps(doc, specName, baseUrl) {
       const params = [...shared, ...(op.parameters || [])];
       const json = op.requestBody?.content?.["application/json"] || Object.values(op.requestBody?.content || {})[0];
       ops.push({
-        id: op.operationId || slug(m, p), spec: specName, method: m.toUpperCase(), path: p,
+        id: op.operationId || slug(m, p), spec: specName, specSource, method: m.toUpperCase(), path: p,
         summary: op.summary || op.description?.split("\n")[0] || "", tags: op.tags || [],
         params: params.map((x) => ({ name: x.name, in: x.in, required: !!x.required, schema: x.schema, description: x.description })),
         requestBody: op.requestBody ? { required: !!op.requestBody.required, schema: json?.schema } : null,
@@ -166,7 +166,7 @@ export class SpecIndex {
         if (!entry.baseUrl) entry.warnings.push(`No base URL: the spec has ${serverUrl(doc) ? `only a relative server URL (${serverUrl(doc)})` : "no servers"}. Set "appUrl" or a per-spec "baseUrl" in jodrell.config.json.`);
         else if (/\{[^}]+\}/.test(entry.baseUrl)) entry.warnings.push(`The base URL still has a placeholder: ${entry.baseUrl}. Set a "baseUrl" for this spec in jodrell.config.json.`);
 
-        const list = buildOps(doc, entry.title, entry.baseUrl);
+        const list = buildOps(doc, entry.title, entry.baseUrl, entry.source);
         for (const op of list) {
           const id = ops.has(op.id) ? `${entry.title.replace(/\W+/g, "_")}.${op.id}` : op.id;
           ops.set(id, { ...op, id });

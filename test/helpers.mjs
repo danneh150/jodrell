@@ -6,6 +6,9 @@ import path from "node:path";
 import http from "node:http";
 import { fileURLToPath } from "node:url";
 
+// Approvals of auth profiles go to a temporary folder, never the real ~/.config.
+process.env.JODRELL_HOME ??= fs.mkdtempSync(path.join(os.tmpdir(), "jodrell-home-"));
+
 export const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 export const BIN = path.join(ROOT, "bin", "jodrell.mjs");
 export const GUARD = path.join(ROOT, "bin", "guard.mjs");

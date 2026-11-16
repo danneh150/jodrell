@@ -5,12 +5,35 @@ import addFormatsModule from "ajv-formats";
 const Ajv = AjvModule.default || AjvModule;
 const addFormats = addFormatsModule.default || addFormatsModule;
 
-const SECRET_HEADER = /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key)$|token|secret|password|session/i;
+// Header (and variable) names that carry secrets: Authorization, X-Auth-Key,
+// apikey, X-Goog-Api-Key, Ocp-Apim-Subscription-Key, anything with token,
+// secret, password, session, signature or credential in it, and cookies.
+const SECRET_HEADER = /auth|api[-_]?key|(^|[-_])key$|token|secret|passw|session|cookie|signature|credential/i;
+const NOT_SECRET = /^(www-authenticate|proxy-authenticate|authentication-info|author)$/i;
 
+// Short secrets are hidden completely: showing both ends of a short value gives
+// most of it away. Long ones keep 3 + 4 characters, to tell tokens apart. An
+// auth scheme ("Bearer ") is kept; a Basic credential is never partly shown.
+const SCHEME = /^(Bearer|Basic|Token|Digest|Negotiate|ApiKey|Key|SSWS)\s+/i;
 export function mask(value) {
   const s = String(value ?? "");
-  if (s.length <= 8) return "••••";
-  return s.slice(0, Math.min(7, s.indexOf(" ") > 0 ? s.indexOf(" ") + 1 : 3)) + "••••" + s.slice(-4);
+  const m = s.match(SCHEME);
+  if (m) return /^basic/i.test(m[1]) ? `${m[0]}••••` : m[0] + mask(s.slice(m[0].length));
+  if (s.length < 24) return "••••";
+  return s.slice(0, 3) + "••••" + s.slice(-4);
+}
+
+// Secrets in URLs: credentials before the host, and query parameters named
+// like a key, token, secret, password or signature.
+const SECRET_PARAM = /token|secret|passw|api[-_]?key|^key$|signature|^sig$|session|credential|^auth$|^code$/i;
+export function redactUrl(url) {
+  try {
+    const u = new URL(url);
+    let changed = false;
+    if (u.username || u.password) { u.username = ""; u.password = ""; changed = true; }
+    for (const [k, v] of [...u.searchParams.entries()]) if (SECRET_PARAM.test(k) && v && !v.includes("••••")) { u.searchParams.set(k, mask(v)); changed = true; }
+    return changed ? u.toString() : url;
+  } catch { return url; }
 }
 
 // Cookies keep their names and attributes (Path, HttpOnly, Max-Age...), but not one character of their values.
@@ -24,12 +47,12 @@ export function redactHeaders(headers = {}) {
   const out = {};
   for (const [k, v] of Object.entries(headers)) {
     const m = /^(set-)?cookie$/i.test(k) ? (x) => maskCookie(k, x) : mask;
-    out[k] = SECRET_HEADER.test(k) ? (Array.isArray(v) ? v.map(m) : m(v)) : v;
+    out[k] = isSecretHeader(k) ? (Array.isArray(v) ? v.map(m) : m(v)) : v;
   }
   return out;
 }
 
-export function isSecretHeader(name) { return SECRET_HEADER.test(name); }
+export function isSecretHeader(name) { return SECRET_HEADER.test(name) && !NOT_SECRET.test(name); }
 
 // OpenAPI 3.0 schemas are close to JSON Schema but not identical. Convert the
 // common differences so Ajv can check them; unknown keywords are ignored.
@@ -106,7 +129,7 @@ export function clearValidationCache() { cache.clear(); }
 
 // Sign-in requests and responses carry passwords, client secrets and tokens in
 // their bodies. Mask those fields (JSON or form-encoded) before they're stored.
-const SECRET_FIELD = /pass(word)?|secret|token|api[-_]?key|credential|^code$|assertion/i;
+const SECRET_FIELD = /pass(word)?|secret|token|api[-_]?key|credential|^code$|assertion|jwt|^sid$|session|^auth$|signature/i;
 export function redactBody(text) {
   if (typeof text !== "string" || !text) return text;
   try {

@@ -1,7 +1,7 @@
 // Builds and sends requests, applies sessions, validates against the spec and
 // records every call. Used by the MCP tools, the web UI and collection runs.
 import { createRequire } from "node:module";
-import { redactHeaders, redactBody, validateResponse, isSecretHeader, mask } from "./checks.mjs";
+import { redactHeaders, redactBody, redactUrl, validateResponse, isSecretHeader, mask } from "./checks.mjs";
 import { makeVars, resolveRequest, effectiveAuth } from "./collections.mjs";
 
 const VERSION = createRequire(import.meta.url)("../package.json").version;
@@ -34,6 +34,8 @@ function joinUrl(base, p) {
   return base.replace(/\/$/, "") + "/" + p.replace(/^\//, "");
 }
 
+const UNSAFE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
 // Cookie jar: { domain: { name: value } }. Cookies only go back to matching hosts.
 function storeCookies(list, jar, host) {
   for (const line of list) {
@@ -43,9 +45,15 @@ function storeCookies(list, jar, host) {
     const name = pair.slice(0, eq).trim();
     const value = pair.slice(eq + 1).trim();
     const a = attrs.map((x) => x.trim());
-    const dom = (a.find((x) => /^domain=/i.test(x))?.slice(7) || host).replace(/^\./, "").toLowerCase();
+    // A Domain attribute is only honoured if it covers the host that set it,
+    // as browsers do: a server can't plant cookies for other hosts, top-level
+    // domains or IP addresses. Names like __proto__ are never used as keys.
+    const asked = (a.find((x) => /^domain=/i.test(x))?.slice(7) || "").replace(/^\./, "").toLowerCase();
+    const isIp = /^[\d.]+$|:/.test(host);
+    const dom = asked && asked !== host && !isIp && asked.includes(".") && host.endsWith("." + asked) ? asked : host;
+    if (UNSAFE_KEYS.has(dom) || UNSAFE_KEYS.has(name)) continue;
     const expired = a.some((x) => /^max-age=0$/i.test(x) || (/^expires=/i.test(x) && Date.parse(x.slice(8)) < Date.now()));
-    jar[dom] ??= {};
+    if (!Object.hasOwn(jar, dom) || typeof jar[dom] !== "object" || jar[dom] === null) jar[dom] = {};
     if (expired || value === "") delete jar[dom][name]; else jar[dom][name] = value;
     if (!Object.keys(jar[dom]).length) delete jar[dom];
   }
@@ -166,9 +174,13 @@ export class Runner {
     const scrubList = secretValues.map(String).filter((v) => v.length >= 4).sort((a, b) => b.length - a.length);
     const scrub = (v) => { if (typeof v !== "string") return v; for (const x of scrubList) { v = v.split(x).join(mask(x)); try { const e = encodeURIComponent(x); if (e !== x) v = v.split(e).join(mask(x)); } catch {} } return v; };
     const started = Date.now();
+    // History keeps no secrets: keys and tokens in the URL, and fields named
+    // like a password or token in the body, are masked. The real values are
+    // kept in memory for replay (see rawSecrets).
+    const rawBody = bodyText(reqBody);
     const record = {
-      run_id: runId, ts: new Date().toISOString(), source, op_id: op?.id, method, url: shownUrl, session, note,
-      req_headers: redactHeaders(h), req_body: loginProfile ? redactBody(bodyText(reqBody)) : bodyText(reqBody), replay_of: replayOf,
+      run_id: runId, ts: new Date().toISOString(), source, op_id: op?.id, method, url: redactUrl(shownUrl), session, note,
+      req_headers: redactHeaders(h), req_body: redactBody(rawBody), replay_of: replayOf,
       item_id: itemId, item_name: itemName, expect_status: expectStatus ? Number(expectStatus) : null,
     };
     if (scrubList.length) { record.url = scrub(record.url); record.req_body = scrub(record.req_body); record.req_headers = Object.fromEntries(Object.entries(record.req_headers).map(([k, v]) => [k, scrub(v)])); }
@@ -184,11 +196,19 @@ export class Runner {
       const setCookies = res.headers.getSetCookie?.() || [];
       if (setCookies.length) resHeaders["set-cookie"] = setCookies;
       if (sess && setCookies.length) { sess.cookies = storeCookies(setCookies, sess.cookies || {}, host); this.store.saveSession(sess); }
+      const ctx = { body: (() => { try { return JSON.parse(text); } catch { return text; } })(), header: Object.fromEntries(Object.entries(resHeaders).map(([k, v]) => [k.toLowerCase(), v])), headers: resHeaders, status: res.status };
+      // A sign-in response: the token itself is masked wherever it appears, whatever it's called.
+      let resBody = text === null ? `[${buf.length} bytes of ${type || "binary data"}]` : text.slice(0, STORE_BODY_LIMIT);
+      if (loginProfile && text !== null) {
+        const got = this.auth.extractToken(loginProfile, ctx, setCookies);
+        resBody = redactBody(resBody);
+        for (const x of [got.token, ...Object.values(got.cookies || {})].filter((v) => typeof v === "string" && v.length >= 4)) resBody = resBody.split(x).join(mask(x));
+      }
 
       Object.assign(record, {
         status: res.status,
         res_headers: redactHeaders(resHeaders),
-        res_body: text === null ? `[${buf.length} bytes of ${type || "binary data"}]` : loginProfile ? redactBody(text.slice(0, STORE_BODY_LIMIT)) : text.slice(0, STORE_BODY_LIMIT),
+        res_body: resBody,
         res_size: buf.length,
         res_type: type,
         truncated: text !== null && text.length > STORE_BODY_LIMIT,
@@ -196,7 +216,7 @@ export class Runner {
         validation: validateResponse(op, res.status, type, text),
       });
       call = this.store.addCall(record);
-      call.ctx = { body: (() => { try { return JSON.parse(text); } catch { return text; } })(), header: Object.fromEntries(Object.entries(resHeaders).map(([k, v]) => [k.toLowerCase(), v])), headers: resHeaders, status: res.status };
+      call.ctx = ctx;
       if (capture && session) call.captured = this.applyCapture(session, capture, call.ctx, host);
       if (loginProfile) call.auth = { profile: loginProfile.name, ...this.auth.acceptLogin(loginProfile, { ctx: call.ctx, setCookies, host, callId: call.id }) };
       else if (authProfile) call.auth = { profile: authProfile.name, applied: authApplied, note: authNote };
@@ -209,9 +229,14 @@ export class Runner {
         : cause?.message ? `Request failed: ${cause.message}` : e.message;
       call = this.store.addCall({ ...record, duration_ms: Date.now() - started, error: reason });
     }
-    // Kept for replay. A token jodrell added itself isn't: replay adds the current one.
-    const secrets = Object.fromEntries(Object.entries(h).filter(([k]) => isSecretHeader(k) && k.toLowerCase() !== "cookie" && k !== autoHeader));
-    if (Object.keys(secrets).length) rawSecrets.set(`${this.store.file}#${call.id}`, secrets);
+    // Kept in memory for replay, tied to this host: the request's own secret
+    // headers (not the session's, or a token jodrell added: those are applied
+    // afresh), and the real URL and body if history has them masked.
+    const own = Object.fromEntries(Object.entries(headers || {}).filter(([k]) => isSecretHeader(k) && k.toLowerCase() !== "cookie" && k !== autoHeader));
+    const keep = { host, headers: own };
+    if (record.url !== shownUrl && shownUrl === url) keep.url = url;
+    if (typeof rawBody === "string" && record.req_body !== rawBody && typeof reqBody === "string") keep.body = reqBody;
+    if (Object.keys(own).length || keep.url || keep.body) rawSecrets.set(`${this.store.file}#${call.id}`, keep);
 
     // The API rejected jodrell's token: sign in again and send once more.
     if (authApplied && call.status === 401) {
@@ -275,7 +300,11 @@ export class Runner {
     let secrets = [];
     const envNames = r.unresolved.filter((v) => v.startsWith("env."));
     if (envNames.length) {
-      if (!this.auth?.loginFor(r.method, r.url)) throw Object.assign(new Error(`${envNames.map((v) => `{{${v}}}`).join(", ")}: secrets from .env or your environment can only be used in an auth profile's sign-in request, so they can't be sent to other hosts. Use an environment variable instead.`), { status: 400 });
+      const lp = this.auth?.loginFor(r.method, r.url);
+      const allowed = new Set(lp ? this.auth.envNames(lp) : []);
+      const stray = envNames.filter((v) => !allowed.has(v));
+      if (lp && stray.length) throw Object.assign(new Error(`${stray.map((v) => `{{${v}}}`).join(", ")}: this sign-in request can only use the secrets its auth profile names (${[...allowed].map((v) => `{{${v}}}`).join(", ") || "none"}).`), { status: 400 });
+      if (!lp) throw Object.assign(new Error(`${envNames.map((v) => `{{${v}}}`).join(", ")}: secrets from .env or your environment can only be used in an auth profile's sign-in request, so they can't be sent to other hosts. Use an environment variable instead.`), { status: 400 });
       const env = this.auth.env();
       const known = Object.fromEntries(envNames.filter((k) => env[k] !== undefined).map((k) => [k, env[k]]));
       secrets = Object.values(known);
@@ -323,12 +352,17 @@ export class Runner {
   async replay(id, edits = {}, runId) {
     const orig = this.store.getCall(id);
     if (!orig) throw new Error(`No call with id ${id}`);
-    const headers = { ...(edits.headers ?? orig.req_headers), ...(rawSecrets.get(`${this.store.file}#${orig.id}`) || {}) };
+    const kept = rawSecrets.get(`${this.store.file}#${orig.id}`);
+    const url = edits.url || kept?.url || orig.url;
+    // Secrets only go back to the host they were first sent to.
+    const sameHost = kept && hostOf(url) === kept.host;
+    const headers = { ...(edits.headers ?? orig.req_headers), ...(sameHost ? kept.headers : {}) };
     for (const [k, v] of Object.entries(headers)) if (String(v).includes("••••")) delete headers[k];
-    const body = edits.body !== undefined ? edits.body : orig.req_body;
+    const body = edits.body !== undefined ? edits.body : sameHost && kept.body !== undefined ? kept.body : orig.req_body;
+    if (typeof body === "string" && body.includes("••••")) throw Object.assign(new Error("Some values in this request (like a password) are masked in the history, so it can't be sent again as it was. Open it, fill them in, and send it."), { status: 400 });
     return this.send({
       op: orig.op_id ? this.specs.get(orig.op_id) : null,
-      method: edits.method || orig.method, url: edits.url || orig.url, headers, body: body ?? undefined,
+      method: edits.method || orig.method, url, headers, body: body ?? undefined,
       session: edits.session !== undefined ? edits.session || undefined : orig.session || undefined,
       note: edits.note || undefined, source: "ui", runId, replayOf: orig.id, itemId: orig.item_id, itemName: orig.item_name, expectStatus: orig.expect_status,
     });
